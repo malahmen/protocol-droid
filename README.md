@@ -3,69 +3,98 @@
 > "I am C-3PO, human–cyborg relations." — fluent in over six million forms of
 > communication, and now a few document formats too.
 
-A gum-free, flag-driven engine for turning documents
-(PDF / DOCX / PPTX / XLSX / HTML / EPUB / images) into **Markdown or JSON**, in
-two modes:
+A gum-free, flag-driven **multi-backend** engine for turning documents into
+**Markdown** (or JSON). It runs on this machine (`local`) or as a scalable
+containerized service (`service`), and — locally — it can drive either of two
+converters, because no single tool is best at everything:
 
-- **`local`** — run the conversion on this machine, isolated in a pipx
-  environment.
-- **`service`** — deploy a containerized service (a Redis queue, a pool of
-  scalable workers, and a small enqueue API) to convert a whole corpus at scale.
+| Backend | Tool | Best for | Weight |
+| --- | --- | --- | --- |
+| `marker` (default) | [datalab-to/marker](https://github.com/datalab-to/marker) | high-fidelity PDF / OCR / layout, tables | heavy (PyTorch + GB of models) |
+| `markitdown` | [Microsoft markitdown](https://github.com/microsoft/markitdown) | breadth + speed; audio transcription, YouTube, ZIP, Outlook `.msg` | light (pip, no ML models) |
+| `auto` | routes per file | PDF/images → marker, everything else → markitdown | — |
 
-Either way it **prepares documents for ingestion** by a downstream RAG / LLM
+Either backend **prepares documents for ingestion** by a downstream RAG / LLM
 pipeline — it converts, it does **not** ingest: no chunking, embedding, or
-indexing happens here (that's the next stage's job). protocol-droid just gets
-your messy binary documents into clean, structured text.
+indexing happens here (that's the next stage's job).
 
-## Powered by marker
+## Credits — it drives other people's converters
 
-All the actual conversion is done by
-**[marker](https://github.com/datalab-to/marker)** (datalab-to/marker) — the
-open-source PDF/document → Markdown converter. protocol-droid is the automation
-around it: in `local` mode it installs marker in an isolated pipx environment and
-drives its CLIs; in `service` mode it loads marker's models **once per worker**
-and reuses them across every job (marker's own CLI reloads them per file), then
-fans work out across as many workers as you scale to. Credit for the conversion
-quality belongs to marker and Datalab; this repo makes it easy to run.
+protocol-droid is the automation *around* two open-source tools; the conversion
+quality is theirs:
+
+- **[marker](https://github.com/datalab-to/marker)** (Datalab) — the PDF/document
+  → Markdown converter behind the `marker` backend and the containerized
+  `service` (where models load **once per worker** and work fans out across
+  replicas). Heavy but high-fidelity.
+- **[markitdown](https://github.com/microsoft/markitdown)** (Microsoft) — the
+  light, broad-format converter behind the `markitdown` backend, adding audio
+  transcription, YouTube transcripts, ZIP and Outlook support.
+
+This repo installs each in its own isolated pipx environment and gives them one
+consistent, scriptable interface.
 
 ## Install / usage
 
-`protocol-droid.sh` is a single, dependency-light Bash script — usable directly
-from a shell, a Makefile, CI, or cron. scomp-link ships a gum TUI that builds
-these flags for you, but nothing here requires it.
+`protocol-droid.sh` is a dependency-light Bash script (an entry script plus
+`lib/` backend adapters) — usable directly from a shell, a Makefile, CI, or cron.
+scomp-link ships a gum TUI that builds these flags for you, but nothing here
+requires it.
 
 ```sh
-protocol-droid.sh <mode> <command> [flags]
+protocol-droid.sh local   <command> [--backend marker|markitdown|auto] [flags]
+protocol-droid.sh service <command> [--target docker|k8s] [flags]
 protocol-droid.sh --help
 ```
 
-### Local mode (pipx marker on this machine)
+### Local mode
+
+`--backend` selects the converter (default `marker`). Commands vary by backend.
+
+**marker** (heavy, high-fidelity):
 
 ```sh
-protocol-droid.sh local setup                 # install marker + OCR backend (large)
-protocol-droid.sh local status                # version, torch device, OCR backend, caches
-protocol-droid.sh local convert report.pdf    # one file -> ./marker-output
-protocol-droid.sh local convert ./docs --output-format json --workers 4   # a folder (batch)
-protocol-droid.sh local convert a.pdf b.docx  # several files (batch, models load once)
-protocol-droid.sh local scan ./docs           # list convertible files (for a picker)
-protocol-droid.sh local gui                   # marker's Streamlit GUI
-protocol-droid.sh local server                # marker's FastAPI server
-protocol-droid.sh local uninstall --yes       # remove the pipx env (caches kept)
-```
-
-`convert` flags: `--output-format markdown|json|html|chunks`, `--output-dir`,
-`--page-range` (single file), `--workers` (batch). Anything after `--` is passed
-straight to marker, which is how you enable LLM-assisted conversion or force OCR:
-
-```sh
+protocol-droid.sh local setup                       # install marker + OCR backend (large)
+protocol-droid.sh local convert report.pdf          # one file -> ./converted
+protocol-droid.sh local convert ./docs --output-format json --workers 4
+protocol-droid.sh local convert a.pdf b.docx        # several files (batch, models load once)
+protocol-droid.sh local status                      # version, torch device, OCR backend, caches
+protocol-droid.sh local gui                         # marker's Streamlit GUI
+protocol-droid.sh local server                      # marker's FastAPI server
 protocol-droid.sh local convert report.pdf -- --force_ocr \
   --use_llm --llm_service marker.services.gemini.GoogleGeminiService --gemini_api_key "$GEMINI_API_KEY"
 ```
 
-marker needs **Python 3.10–3.13** and **pipx**; `local setup` installs pipx and
-(on macOS/CPU) marker's OCR backend `llama-server` (Homebrew's `llama.cpp`) for
-you. Models download from the Hugging Face Hub on first run into
-`~/.cache/huggingface` (several GB), then run offline automatically.
+marker `convert` flags: `--output-format markdown|json|html|chunks`,
+`--output-dir`, `--page-range` (single file), `--workers` (batch). Anything after
+`--` is forwarded to marker (LLM-assist, force OCR, …). Setup installs pipx and
+(on macOS/CPU) the `llama-server` OCR backend; models download from the HF Hub on
+first run (several GB), then run offline automatically.
+
+**markitdown** (light, broad):
+
+```sh
+protocol-droid.sh local setup   --backend markitdown              # markitdown[all]
+protocol-droid.sh local setup   --backend markitdown --extras pdf,docx,audio-transcription
+protocol-droid.sh local convert --backend markitdown talk.mp3     # -> ./converted/talk.md
+protocol-droid.sh local convert --backend markitdown ./corpus     # a whole folder
+protocol-droid.sh local convert --backend markitdown scan.pdf -- -d -e "$ENDPOINT"   # Azure Doc Intelligence
+protocol-droid.sh local status  --backend markitdown
+protocol-droid.sh local install-plugin --backend markitdown markitdown-sample-plugin
+```
+
+markitdown emits one `<name>.md` per input; flags after `--` go to markitdown
+(`--use-plugins`, `-d`/`-e` for Document Intelligence). mp3 transcription also
+needs `ffmpeg` on your system.
+
+**auto** — convert only; routes each file to the fitting backend:
+
+```sh
+protocol-droid.sh local convert --backend auto ./mixed-corpus   # PDFs/images -> marker, rest -> markitdown
+```
+
+Both backends need **Python 3.10+** and **pipx** (installed by `setup`); each
+lives in its own pipx environment. Default output dir is `./converted`.
 
 ### Service mode (containerized, scalable)
 
@@ -129,12 +158,15 @@ reachable by the cluster yourself (registry push, or `kind load docker-image`).
 
 ## Requirements
 
-- **local**: Bash 4+, Python 3.10–3.13, pipx (installed by `local setup`), and
-  enough disk/RAM for marker's models.
+- **local**: Bash 4+, Python 3.10–3.13, pipx (installed by `setup`). The
+  `marker` backend also wants plenty of disk/RAM for its models; the `markitdown`
+  backend additionally wants `ffmpeg` for mp3 transcription.
 - **service**: Docker with the Compose plugin, or kubectl + a cluster.
 
 ## License
 
-Released into the public domain — see [LICENSE](LICENSE) (Unlicense). marker is
-licensed separately by Datalab; see its
-[repository](https://github.com/datalab-to/marker) for its terms.
+Released into the public domain — see [LICENSE](LICENSE) (Unlicense). The
+converters it drives are licensed separately:
+[marker](https://github.com/datalab-to/marker) by Datalab and
+[markitdown](https://github.com/microsoft/markitdown) by Microsoft — see their
+repositories for terms.
