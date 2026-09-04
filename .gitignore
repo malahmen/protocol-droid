@@ -1,0 +1,14 @@
+# local env + data
+.env
+input/
+output/
+models/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# os
+.DS_Store
