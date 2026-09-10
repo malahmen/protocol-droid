@@ -94,10 +94,12 @@ scan_files() {
     local exts=("$@") find_args=() ext found
     for ext in "${exts[@]}"; do find_args+=(-iname "*.${ext}" -o); done
     unset 'find_args[${#find_args[@]}-1]'   # drop trailing -o
-    found=$(find "$dir" -maxdepth "$depth" -type f \( "${find_args[@]}" \) \
+    # `|| true`: under pipefail one unreadable subfolder would otherwise fail the
+    # whole pipeline and blank the scan; find still lists what it could read.
+    found=$({ find "$dir" -maxdepth "$depth" -type f \( "${find_args[@]}" \) \
         ! -path "*/node_modules/*" ! -path "*/.git/*" \
         ! -path "*/converted/*" ! -path "*/marker-output/*" ! -path "*/markitdown-output/*" \
-        2>/dev/null | sed 's|^\./||' | sort)
+        2>/dev/null || true; } | sed 's|^\./||' | sort)
     [[ -n "$found" ]] || return 1
     printf '%s\n' "$found"
 }
