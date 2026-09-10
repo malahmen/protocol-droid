@@ -1,7 +1,12 @@
 # Enqueue/status HTTP API (light, CPU-only). Reach it with:
 #   kubectl -n marker port-forward svc/marker-api 8000:8000
 #   curl -X POST localhost:8000/jobs -H 'content-type: application/json' \
+#        -H "authorization: Bearer $TOKEN" \
 #        -d '{"path":"/data/input/doc.pdf","output_format":"chunks"}'
+# The Service is ClusterIP (not reachable from outside the cluster). Before
+# exposing it (Ingress/LoadBalancer) create the shared token — the pod picks it
+# up from the optional `marker-api` Secret:
+#   kubectl -n marker create secret generic marker-api --from-literal=token="$(openssl rand -hex 32)"
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,7 +29,12 @@ spec:
             - containerPort: 8000
           env:
             - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - { name: INPUT_DIR, value: "/data/input" }
             - { name: OUTPUT_DIR, value: "/data/output" }
+            - { name: RESULT_TTL, value: "86400" }
+            - name: PROTOCOL_DROID_TOKEN
+              valueFrom:
+                secretKeyRef: { name: marker-api, key: token, optional: true }
           resources:
             requests: { cpu: "50m", memory: "128Mi" }
             limits: { cpu: "500m", memory: "512Mi" }

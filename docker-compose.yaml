@@ -11,6 +11,11 @@
 # Put source docs under ${MARKER_INPUT:-./input}; results land in
 # ${MARKER_OUTPUT:-./output}. Models cache in the `models` volume (first run
 # downloads several GB). GPU only applies on a CUDA host (see the worker note).
+#
+# The API listens on ${API_BIND:-127.0.0.1}:8000 — localhost only by default,
+# because without PROTOCOL_DROID_TOKEN it is unauthenticated. To expose it, set
+# BOTH in .env: PROTOCOL_DROID_TOKEN=<long random secret> and API_BIND=0.0.0.0
+# (callers then send `Authorization: Bearer <token>`).
 services:
   redis:
     image: redis:7-alpine
@@ -24,9 +29,12 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
+      INPUT_DIR: /data/input
       OUTPUT_DIR: /data/output
+      RESULT_TTL: ${RESULT_TTL:-86400}
+      PROTOCOL_DROID_TOKEN: ${PROTOCOL_DROID_TOKEN:-}
     ports:
-      - "8000:8000"
+      - "${API_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - "${MARKER_INPUT:-./input}:/data/input"
       - "${MARKER_OUTPUT:-./output}:/data/output"
@@ -41,6 +49,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       OUTPUT_DIR: /data/output
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}   # only needed for use_llm (marker's Gemini service)
     volumes:
       - "${MARKER_INPUT:-./input}:/data/input"
       - "${MARKER_OUTPUT:-./output}:/data/output"
