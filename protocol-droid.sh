@@ -94,9 +94,11 @@ auto_convert() {
         if _is_marker_ext "$e"; then m_files+=("$f"); else d_files+=("$f"); fi
     done
 
-    (( ${#m_files[@]} > 0 )) && { info "auto: ${#m_files[@]} file(s) → marker"; marker_convert --output-dir "$out_dir" "${m_files[@]}"; }
-    (( ${#d_files[@]} > 0 )) && { info "auto: ${#d_files[@]} file(s) → markitdown"; markitdown_convert --output-dir "$out_dir" "${d_files[@]}"; }
-    (( ${#m_files[@]} == 0 && ${#d_files[@]} == 0 )) && warn "auto: nothing to convert."
+    # Both backends share one output dir, so suppress their per-run open_path and reveal it once.
+    (( ${#m_files[@]} > 0 )) && { info "auto: ${#m_files[@]} file(s) → marker"; PROTOCOL_DROID_NO_OPEN=1 marker_convert --output-dir "$out_dir" "${m_files[@]}"; }
+    (( ${#d_files[@]} > 0 )) && { info "auto: ${#d_files[@]} file(s) → markitdown"; PROTOCOL_DROID_NO_OPEN=1 markitdown_convert --output-dir "$out_dir" "${d_files[@]}"; }
+    if (( ${#m_files[@]} == 0 && ${#d_files[@]} == 0 )); then warn "auto: nothing to convert."
+    elif [[ -d "$out_dir" ]]; then open_path "$out_dir"; fi
     return 0
 }
 

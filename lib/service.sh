@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # -----------------------------------------------------------------------------
 # lib/service.sh — the containerized conversion service (marker workers).
 # A Redis queue + FastAPI enqueue API + scalable marker workers, via Docker
