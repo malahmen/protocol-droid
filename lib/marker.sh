@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # -----------------------------------------------------------------------------
 # lib/marker.sh — the "marker" backend adapter for protocol-droid.
 # Runs datalab-to/marker (heavy: PyTorch + models + surya OCR) for high-fidelity
@@ -136,8 +137,8 @@ marker_convert() {
 
     local mode in_dir label tmp="" bin
     if (( ${#paths[@]} == 1 )) && [[ -f "${paths[0]}" ]]; then mode=single
-    elif (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then mode=batch; in_dir="${paths[0]}"; label="${paths[0]}"
-    else mode=batch; tmp=$(link_into_tmp "${paths[@]}") || error_exit "Could not stage the selection for batch."; in_dir="$tmp"; label="${#paths[@]} selected files"; fi
+    elif (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then mode="batch"; in_dir="${paths[0]}"; label="${paths[0]}"
+    else mode="batch"; tmp=$(link_into_tmp "${paths[@]}") || error_exit "Could not stage the selection for batch."; in_dir="$tmp"; label="${#paths[@]} selected files"; fi
 
     if [[ "$mode" == single ]]; then
         [[ -n "$page_range" ]] && extra+=(--page_range "$page_range")

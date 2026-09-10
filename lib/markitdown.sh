@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # -----------------------------------------------------------------------------
 # lib/markitdown.sh — the "markitdown" backend adapter for protocol-droid.
 # Runs Microsoft markitdown (light pip tool) for fast, broad-format conversion —
@@ -15,6 +16,19 @@ markitdown_installed() { resolve_bin "$MID_PKG" markitdown &>/dev/null; }
 markitdown_version()   { pkg_version "$MID_PKG"; }
 markitdown_require()   { markitdown_installed || error_exit "markitdown is not installed. Run: protocol-droid.sh local setup --backend markitdown"; }
 
+# --extras must be "all" or a csv subset of MID_EXTRAS; pip would otherwise only
+# warn about an unknown extra and silently install a markitdown without it.
+markitdown_check_extras() {
+    local extras="$1" list=() e m ok
+    [[ "$extras" == "all" ]] && return 0
+    [[ -n "$extras" ]] || error_exit "markitdown setup: --extras needs a value (all or a csv of: ${MID_EXTRAS[*]})."
+    IFS=',' read -r -a list <<< "$extras"
+    for e in "${list[@]}"; do
+        ok=false; for m in "${MID_EXTRAS[@]}"; do [[ "$e" == "$m" ]] && { ok=true; break; }; done
+        [[ "$ok" == true ]] || error_exit "markitdown setup: unknown extra '${e}' (valid: all, ${MID_EXTRAS[*]})."
+    done
+}
+
 # Build the "markitdown[...]" spec from an --extras value ("all" or a csv list).
 markitdown_spec() {
     local extras="${1:-all}"
@@ -29,6 +43,7 @@ markitdown_setup() {
         --upgrade) do_upgrade=true; shift ;;
         *) error_exit "markitdown setup: unknown flag: $1" ;;
     esac; done
+    markitdown_check_extras "$extras"
 
     local py; py="$(find_python)" || error_exit "No markitdown-compatible Python (3.10+ with a working venv) found.
 Install one, e.g.  macOS: brew install python@3.12   Linux: your pkg manager's python3.12 (or 3.11/3.10)."

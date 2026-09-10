@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # -----------------------------------------------------------------------------
 # lib/common.sh — shared helpers for the protocol-droid backends.
 # Sourced by protocol-droid.sh (which owns `set -euo pipefail`). Defines logging,
@@ -13,7 +14,9 @@ success()    { printf '%s[ok]%s    %s\n' "$C_G" "$C_N" "$*" >&2; }
 warn()       { printf '%s[warn]%s  %s\n' "$C_Y" "$C_N" "$*" >&2; }
 error_exit() { printf '%s[error]%s %s\n' "$C_R" "$C_N" "$*" >&2; exit 1; }
 
+# shellcheck disable=SC2034  # consumed by lib/<backend>.sh and protocol-droid.sh
 DEFAULT_OUTPUT_DIR="./converted"
+# shellcheck disable=SC2034
 DEFAULT_DEPTH=3
 PIPX=""   # resolved by resolve_pipx()
 
@@ -25,7 +28,10 @@ os_family() {
     esac
 }
 
+# Reveal a path in the desktop file manager. PROTOCOL_DROID_NO_OPEN=1 disables
+# it (CI, cron, TUIs — and auto mode, which opens the output dir once itself).
 open_path() {
+    [[ "${PROTOCOL_DROID_NO_OPEN:-}" == 1 ]] && return 0
     local p="$1"
     if command -v xdg-open &>/dev/null; then xdg-open "$p" &>/dev/null &
     elif command -v open &>/dev/null; then open "$p"; fi
@@ -34,14 +40,20 @@ open_path() {
 # A Python 3.10–3.13 with a working venv, preferring the most settled version.
 # Never returns 3.14+ (marker/torch don't support it, and onnxruntime — pulled by
 # markitdown — lags there too). Echoes the interpreter path; non-zero if none.
+PYTHON_VERSIONS=(3.12 3.11 3.13 3.10)
+_python_venv_ok() { local tmp rc=1; tmp="$(mktemp -d)" || return 1; "$1" -m venv "${tmp}/v" &>/dev/null && rc=0; rm -rf "$tmp"; return "$rc"; }
 find_python() {
-    local v path tmp
-    for v in 3.12 3.11 3.13 3.10; do
+    local v path
+    for v in "${PYTHON_VERSIONS[@]}"; do
         path="$(command -v "python${v}" 2>/dev/null || true)"
-        [[ -n "$path" ]] || continue
-        tmp="$(mktemp -d)"
-        if "$path" -m venv "${tmp}/v" &>/dev/null; then rm -rf "$tmp"; printf '%s' "$path"; return 0; fi
-        rm -rf "$tmp"
+        [[ -n "$path" ]] && _python_venv_ok "$path" && { printf '%s' "$path"; return 0; }
+    done
+    # An unversioned python3 (pyenv/uv shim, distro default) whose version is in range.
+    path="$(command -v python3 2>/dev/null || true)"
+    [[ -n "$path" ]] || return 1
+    v="$("$path" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    for _ in "${PYTHON_VERSIONS[@]}"; do
+        [[ "$v" == "$_" ]] && _python_venv_ok "$path" && { printf '%s' "$path"; return 0; }
     done
     return 1
 }
