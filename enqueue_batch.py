@@ -7,7 +7,7 @@ Usage:
                           [--use_llm] [--force_ocr]
 
 Env mirrors the workers: REDIS_URL, MARKER_QUEUE, OUTPUT_DIR, OUTPUT_FORMAT,
-JOB_TIMEOUT.
+JOB_TIMEOUT, RESULT_TTL (seconds a result/failure stays in Redis; default 24h).
 """
 import argparse
 import os
@@ -35,6 +35,7 @@ def main():
     if not os.path.isdir(args.input_dir):
         raise SystemExit(f"not a directory: {args.input_dir}")
 
+    result_ttl = int(os.environ.get("RESULT_TTL", "86400"))
     conn = Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
     queue = Queue(
         os.environ.get("MARKER_QUEUE", "marker"),
@@ -53,7 +54,7 @@ def main():
                 opts["use_llm"] = True
             if args.force_ocr:
                 opts["force_ocr"] = True
-            queue.enqueue(tasks.convert_document, path, opts)
+            queue.enqueue(tasks.convert_document, path, opts, result_ttl=result_ttl, failure_ttl=result_ttl)
             count += 1
 
     print(f"enqueued {count} document(s) onto the '{queue.name}' queue")
