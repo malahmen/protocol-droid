@@ -94,6 +94,7 @@ markitdown_convert() {
     done
     success "Done — ${ok} converted, ${fail} failed → ${out_dir}/"
     (( ok > 0 )) && open_path "$out_dir"
+    return 0   # not the status of the trailing `(( )) &&` (false when nothing converted)
 }
 
 markitdown_status() {

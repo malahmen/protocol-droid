@@ -23,7 +23,8 @@ marker_ensure_injected() {
     info "Adding $* to marker's environment (one-time)..."
     $PIPX inject "$MARKER_PKG" "$@" >/dev/null 2>&1 || { warn "Could not inject: $*"; return 1; }
 }
-marker_ensure_deps() { marker_ensure_injected psutil psutil; }   # batch/chunk needs psutil
+# batch/chunk needs psutil; a failed inject is only a warning (marker still runs), so never abort on it.
+marker_ensure_deps() { marker_ensure_injected psutil psutil || true; }
 
 # --- Surya OCR backend (llama.cpp / vLLM) -----------------------------------
 marker_surya_backend() {
@@ -156,6 +157,7 @@ marker_convert() {
         else warn "Batch conversion reported errors."; fi
         [[ -n "$tmp" ]] && rm -rf "$tmp"
     fi
+    return 0   # not the status of the trailing `[[ ]] && rm` (false when nothing was staged)
 }
 
 marker_status() {
