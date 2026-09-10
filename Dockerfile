@@ -8,7 +8,6 @@
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTORCH_ENABLE_MPS_FALLBACK=1 \
     HF_HOME=/models \
     TORCH_HOME=/models \
     REDIS_URL=redis://redis:6379/0 \
@@ -25,6 +24,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY tasks.py worker.py api.py enqueue_batch.py ./
+
+# Run unprivileged. /data/{input,output} and /models are the mount points; a
+# host bind mount must be writable by uid 1000 (k8s: fsGroup 1000 or an RWX
+# class that maps ownership). The `models` named volume inherits app's ownership.
+RUN useradd --system --uid 1000 --create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /data/input /data/output /models \
+    && chown -R app:app /data /models
+USER app
 
 # Default role: worker. Override in compose/k8s for the API or batch enqueuer.
 CMD ["python", "worker.py"]

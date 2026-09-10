@@ -1,9 +1,10 @@
 # Scalable conversion workers. `replicas` IS your horizontal scale — each worker
 # loads marker's models once and consumes jobs from the Redis queue.
 #
-# Image: build scripts/marker/templates/service/ and make it available to the
-# cluster (push to a registry, or `kind load` / `minikube image load`), then set
-# it below. Default assumes a locally-loaded `marker-service:latest`.
+# Image: build this repo's Dockerfile (`protocol-droid.sh service build
+# --target k8s`) and make it available to the cluster (push to a registry, or
+# `kind load` / `minikube image load`), then set it below. Default assumes a
+# locally-loaded `marker-service:latest`.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
