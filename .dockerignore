@@ -1,0 +1,11 @@
+# Keep the build context small and secret-free: the corpus and model cache are
+# mounted at runtime, never copied into the image.
+input/
+output/
+models/
+.git
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
