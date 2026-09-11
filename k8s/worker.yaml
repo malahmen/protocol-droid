@@ -34,8 +34,12 @@ spec:
             - { name: OUTPUT_DIR, value: "/data/output" }
             - { name: HF_HOME, value: "/models" }
           resources:
-            requests: { cpu: "1", memory: "4Gi" }
-            limits: { cpu: "4", memory: "8Gi" }
+            # The OCR path spawns llama-server inside this container (surya's
+            # llamacpp backend), so the surya GGUF + mmproj stay resident on top
+            # of marker's own models: budget ~4Gi more than a text-layer-only
+            # worker. Rough figures — measure your corpus and tighten them.
+            requests: { cpu: "1", memory: "6Gi" }
+            limits: { cpu: "4", memory: "12Gi" }
             # GPU: uncomment to request one GPU per worker.
             # limits:
             #   nvidia.com/gpu: 1

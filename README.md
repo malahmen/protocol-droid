@@ -158,13 +158,29 @@ present. Models are **not** baked into the image — they download on first run
 into a shared `/models` volume (several GB). The container runs as an
 unprivileged user (uid 1000), so host bind mounts must be writable by that uid.
 
-> **OCR inside the container is not wired up yet.** marker's OCR engine (surya)
-> needs an inference backend: on CPU it spawns `llama-server` (llama.cpp), which
-> the image does not ship; on NVIDIA it wants vLLM. Text-layer PDFs and Office
-> documents convert fine; scanned pages and `force_ocr` fail until `llama-server`
-> is added to the image. Tune the choice with `SURYA_INFERENCE_BACKEND=llamacpp|vllm`
-> on the worker. `use_llm` needs `GOOGLE_API_KEY` (marker's env name for its
-> Gemini service) — set it in `.env`, compose passes it to the workers.
+**OCR in the containers.** marker's OCR engine (surya) does not run inference
+in-process: it spawns a `llama-server` (llama.cpp) and drives it over loopback.
+The image builds that binary itself (multi-stage, from `ggml-org/llama.cpp`
+`v0.4.0`, CPU-portable) and points surya at it, so scanned pages and
+`force_ocr` work in the service — no extra setup. The knobs:
+
+- `SURYA_INFERENCE_BACKEND` — `llamacpp` or `vllm`. Surya defaults to `vllm`
+  when it sees an NVIDIA GPU, and vLLM is *not* installed in this image, so the
+  Dockerfile pins `llamacpp`; the bundled server is CPU-only, which is the
+  slower but always-available path. Set `vllm` (and install it) only if you
+  build your own GPU image.
+- `LLAMA_CPP_BINARY` — path to the server, preset to
+  `/usr/local/bin/llama-server`. Also honoured by `local setup`, which installs
+  llama.cpp via Homebrew on the host (`setup --no-llama` skips it).
+- Optional: `LLAMA_CPP_NGL`, `LLAMA_CPP_EXTRA_ARGS`, and surya's
+  `SURYA_INFERENCE_URL` (attach to an already-running server instead of
+  spawning one) / `SURYA_INFERENCE_KEEP_ALIVE`.
+- On first OCR run surya downloads its own GGUF weights (`datalab-to/surya-ocr-2-gguf`,
+  several GB) into `HF_HOME=/models`, and the server holds them resident next to
+  marker's models — hence the 12Gi worker memory limit in `k8s/worker.yaml`.
+
+`use_llm` needs `GOOGLE_API_KEY` (marker's env name for its Gemini service) —
+set it in `.env`, compose passes it to the workers.
 
 ```sh
 # Docker Compose
@@ -229,9 +245,10 @@ reachable by the cluster yourself (registry push, or `kind load docker-image`).
   `marker` backend also wants plenty of disk/RAM for its models and, on
   CPU, `llama-server` for OCR; the `markitdown` backend additionally wants
   `ffmpeg` for mp3 transcription.
-- **service**: Docker with the Compose plugin, or kubectl + a cluster. OCR in
-  the containers additionally needs `llama-server` in the image (not yet shipped,
-  see above).
+- **service**: Docker with the Compose plugin, or kubectl + a cluster. The image
+  build also compiles `llama-server` from source (surya's OCR backend), so the
+  build needs network access to GitHub and a few minutes of CPU; nothing extra
+  is required at runtime.
 
 ## License
 
