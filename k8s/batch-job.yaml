@@ -12,6 +12,17 @@ spec:
   backoffLimit: 1
   template:
     spec:
+      # The image runs as uid/gid 1000 (`app`, see Dockerfile). fsGroup makes the
+      # kubelet apply gid 1000 to the mounted PVCs, so the process can write
+      # /data/output and the model cache; without it the volumes come up
+      # root-owned and every write fails with EACCES. fsGroup is honoured by
+      # CSI/in-tree drivers that manage ownership — on NFS-backed RWX shares set
+      # the ownership (or no_root_squash + 1000:1000) on the server instead.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
       restartPolicy: Never
       containers:
         - name: enqueue

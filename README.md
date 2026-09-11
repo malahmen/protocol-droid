@@ -158,6 +158,19 @@ present. Models are **not** baked into the image — they download on first run
 into a shared `/models` volume (several GB). The container runs as an
 unprivileged user (uid 1000), so host bind mounts must be writable by that uid.
 
+> **Non-root and your mounts.** On Linux the first login account is usually uid
+> 1000, so `./input` / `./output` (created by `deploy` as you) are already
+> writable by the container; Docker Desktop on macOS maps ownership for you. If
+> your host uid is *not* 1000, either `chown -R 1000:1000 ./input ./output` or
+> add `user: "$(id -u):$(id -g)"` to the `api` and `worker` services in
+> `docker-compose.yaml` (the image's `/data` and `/models` are world-traversable,
+> and the `models` named volume inherits the image's ownership). On Kubernetes
+> the manifests set a pod `securityContext` (`runAsUser`/`runAsGroup`/`fsGroup`
+> 1000, `runAsNonRoot: true`) so the kubelet hands the PVCs to gid 1000 —
+> required, or the workers cannot write `/data/output` or the model cache.
+> `fsGroup` is only honoured by drivers that manage volume ownership; on an
+> NFS-backed RWX share set the ownership on the server instead.
+
 > **OCR inside the container is not wired up yet.** marker's OCR engine (surya)
 > needs an inference backend: on CPU it spawns `llama-server` (llama.cpp), which
 > the image does not ship; on NVIDIA it wants vLLM. Text-layer PDFs and Office
