@@ -41,11 +41,31 @@ svc_env_load() {
 }
 _compose() { svc_env_load; docker compose -f "$COMPOSE" "$@"; }
 
+# _verify_image_ocr — the image is supposed to ship llama-server (surya's CPU
+# OCR backend, built by the Dockerfile's first stage). A build can succeed with
+# the binary missing or landed somewhere the runtime stage doesn't look, and
+# nothing would say so until a scanned page failed mid-conversion with a
+# confusing error. One ~1s probe right after the build turns that into an
+# immediate, named failure. Mirrors what 'local status' already reports for the
+# host install, so both paths answer "is OCR actually going to work?".
+_verify_image_ocr() {
+    local out
+    if out=$(docker run --rm --entrypoint llama-server "$IMAGE" --version 2>&1); then
+        success "OCR backend present in ${IMAGE}: $(printf '%s' "$out" | head -1)"
+        return 0
+    fi
+    warn "llama-server is NOT runnable in ${IMAGE} — text-layer PDFs will convert,"
+    warn "but scanned pages and --force_ocr will fail. Rebuild with 'service build',"
+    warn "or set SURYA_INFERENCE_URL to an external inference server."
+    return 1
+}
+
 svc_build() {
     local target="$1"
     if [[ "$target" == docker ]]; then _need_docker; else command -v docker &>/dev/null || error_exit "docker not found (needed to build the image)."; fi
     info "Building ${IMAGE} (large: installs marker + torch + deps)..."
     docker build -t "$IMAGE" "$HERE" && success "Built ${IMAGE}." || error_exit "Build failed."
+    _verify_image_ocr || true   # reported, not fatal: the rest of the image is usable
     [[ "$target" == k8s ]] && info "For k8s, make it available to the cluster (registry push, or 'kind load docker-image ${IMAGE}')."
     return 0
 }
@@ -60,8 +80,17 @@ svc_deploy() {
         info "Building image + starting stack (first run downloads models — several GB)..."
         _compose up -d --build \
             && success "Service up — API at http://localhost:8000 (POST /jobs)." || error_exit "docker compose up failed."
+        _verify_image_ocr || true
     else
         _need_kubectl
+        # The k8s path can't build as part of 'apply', so the image has to exist
+        # already. Build it here when it doesn't, rather than applying manifests
+        # that will sit in ImagePullBackOff: the image is only ever needed on
+        # this path, so this is the moment it is required.
+        if command -v docker &>/dev/null && ! docker image inspect "$IMAGE" &>/dev/null; then
+            warn "Image ${IMAGE} not present locally — building it first."
+            svc_build k8s
+        fi
         info "Applying manifests to namespace '${K8S_NS}'..."
         kubectl apply -f "${K8S}/namespace.yaml" || error_exit "apply failed."
         kubectl apply -f "${K8S}/pvc.yaml" -f "${K8S}/redis.yaml" -f "${K8S}/api.yaml" -f "${K8S}/worker.yaml" \
@@ -72,7 +101,9 @@ svc_deploy() {
 
 svc_status() {
     local target="$1"
-    if [[ "$target" == docker ]]; then _need_docker; _compose ps || warn "Is the stack deployed?"
+    if [[ "$target" == docker ]]; then
+        _need_docker; _compose ps || warn "Is the stack deployed?"
+        docker image inspect "$IMAGE" &>/dev/null && _verify_image_ocr || info "Image ${IMAGE} not built yet."
     else _need_kubectl; kubectl -n "$K8S_NS" get pods,svc,pvc || warn "Is the namespace deployed?"; fi
 }
 
