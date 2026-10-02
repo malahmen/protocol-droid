@@ -25,8 +25,9 @@
 #   LLAMA_USE_PREBUILT_UI=OFF  skip the build-time download of the server's Web
 #                          UI bundle from the HF bucket; surya only speaks to
 #                          /health, /v1/models and /v1/chat/completions.
-# bookworm matches the python:3.12-slim base; building on the older glibc keeps
-# the binary loadable if that base moves to a newer Debian.
+# Built on bookworm (glibc 2.36) while python:3.12-slim has moved on to trixie:
+# a binary linked against the older glibc loads on the newer one, so the runtime
+# base can keep moving without rebuilding this stage differently.
 FROM debian:bookworm-slim AS llama
 # Pinned tag (bump deliberately, with a rebuild). Floor: surya's GGUF is a
 # qwen35 multimodal model, so the server needs qwen35 + mtmd support — anything
@@ -71,9 +72,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System libs marker's OpenCV/image stack needs at runtime.
+# System libs: libgl1/libglib2.0 for marker's OpenCV/image stack; libgomp1 is
+# GNU OpenMP, which llama-server's libggml-cpu links against. The build stage
+# gets it from build-essential, the slim runtime base does not ship it, and
+# without it llama-server fails to load (no OCR at all).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
+        libgl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # surya's OCR backend, from stage 1: the server binary plus the shared libraries

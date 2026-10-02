@@ -103,7 +103,10 @@ svc_status() {
     local target="$1"
     if [[ "$target" == docker ]]; then
         _need_docker; _compose ps || warn "Is the stack deployed?"
-        docker image inspect "$IMAGE" &>/dev/null && _verify_image_ocr || info "Image ${IMAGE} not built yet."
+        # if/else, not `inspect && verify || info`: a failed probe must not be
+        # reported as "not built".
+        if docker image inspect "$IMAGE" &>/dev/null; then _verify_image_ocr || true
+        else info "Image ${IMAGE} not built yet."; fi
     else _need_kubectl; kubectl -n "$K8S_NS" get pods,svc,pvc || warn "Is the namespace deployed?"; fi
 }
 
