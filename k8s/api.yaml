@@ -40,6 +40,9 @@ spec:
             - containerPort: 8000
           env:
             - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: marker-redis, key: password }
             - { name: INPUT_DIR, value: "/data/input" }
             - { name: OUTPUT_DIR, value: "/data/output" }
             - { name: RESULT_TTL, value: "86400" }

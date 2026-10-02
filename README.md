@@ -253,6 +253,17 @@ curl -s -H "authorization: Bearer $PROTOCOL_DROID_TOKEN" localhost:8000/jobs/<jo
   `127.0.0.1:8000` only. To reach it from other hosts set **both** a token and
   `API_BIND=0.0.0.0` in `.env`; on k8s the Service is ClusterIP — create the
   Secret before adding an Ingress/LoadBalancer.
+- **Redis is closed too.** RQ jobs are pickled callables, so whoever can write
+  to the queue can run code in the workers, past the API's path checks. Redis
+  therefore requires AUTH. With compose, `service deploy` generates
+  `REDIS_PASSWORD` into `.env` (mode 600) on first deploy and keeps it; Redis
+  is never published outside the compose network. On k8s, `service deploy`
+  creates the `marker-redis` Secret when missing (pods refuse to start without
+  it), and `k8s/networkpolicy.yaml` lets only the api, worker and batch pods
+  reach Redis. That policy needs a CNI that enforces NetworkPolicy (Calico,
+  Cilium, kindnet in kind ≥ 0.24); AUTH applies either way. Applying the
+  manifests by hand: `kubectl -n marker create secret generic marker-redis
+  --from-literal=password="$(openssl rand -hex 24)"` first.
 - **Path confinement.** `path` must resolve (after symlinks and `..`) under
   `/data/input` and `output_dir` under `/data/output`; anything else is `400`.
   Workers therefore only ever read the input mount and write the output mount.

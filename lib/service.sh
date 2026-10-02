@@ -23,6 +23,29 @@ _need_kubectl() { command -v kubectl &>/dev/null || error_exit "kubectl not foun
 # caller's cwd — compose would otherwise resolve a relative path against $HERE.
 _realpath_dir() { mkdir -p "$1" 2>/dev/null || error_exit "cannot create directory: $1"; (cd "$1" && pwd -P); }
 
+# A random, URL-safe secret (hex), without requiring openssl.
+_gen_secret() { od -An -N24 -tx1 /dev/urandom | tr -d ' \n'; }
+
+# Redis AUTH for compose: compose reads REDIS_PASSWORD from .env. Generated
+# once and then kept, so a redeploy does not lock the workers out.
+svc_redis_password_docker() {
+    if [[ -f "$ENV_FILE" ]] && grep -q '^REDIS_PASSWORD=.' "$ENV_FILE"; then return 0; fi
+    local tmp; tmp=$(mktemp) || error_exit "mktemp failed."
+    if [[ -f "$ENV_FILE" ]]; then grep -v '^REDIS_PASSWORD=' "$ENV_FILE" > "$tmp" || true; fi
+    printf 'REDIS_PASSWORD=%s\n' "$(_gen_secret)" >> "$tmp"
+    mv "$tmp" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+    info "Generated a Redis password (REDIS_PASSWORD in ${ENV_FILE})."
+}
+
+# Redis AUTH for k8s: the pods read the `marker-redis` Secret and refuse to
+# start without it, so a missing Secret never silently means "no auth".
+svc_redis_secret_k8s() {
+    if kubectl -n "$K8S_NS" get secret marker-redis &>/dev/null; then return 0; fi
+    kubectl -n "$K8S_NS" create secret generic marker-redis --from-literal=password="$(_gen_secret)" >/dev/null \
+        || error_exit "could not create the marker-redis Secret."
+    info "Created Secret marker-redis (Redis password)."
+}
+
 # The mounts live in .env next to the compose file: deploy writes them, every
 # other compose call loads them, so scale/enqueue/status see the same volumes.
 svc_env_save() {
@@ -76,6 +99,7 @@ svc_deploy() {
         _need_docker
         input="$(_realpath_dir "$input")"; output="$(_realpath_dir "$output")"
         svc_env_save "$input" "$output"
+        svc_redis_password_docker
         info "Mounts: ${input} → /data/input, ${output} → /data/output (recorded in ${ENV_FILE})."
         info "Building image + starting stack (first run downloads models — several GB)..."
         _compose up -d --build \
@@ -93,7 +117,8 @@ svc_deploy() {
         fi
         info "Applying manifests to namespace '${K8S_NS}'..."
         kubectl apply -f "${K8S}/namespace.yaml" || error_exit "apply failed."
-        kubectl apply -f "${K8S}/pvc.yaml" -f "${K8S}/redis.yaml" -f "${K8S}/api.yaml" -f "${K8S}/worker.yaml" \
+        svc_redis_secret_k8s
+        kubectl apply -f "${K8S}/pvc.yaml" -f "${K8S}/redis.yaml" -f "${K8S}/networkpolicy.yaml" -f "${K8S}/api.yaml" -f "${K8S}/worker.yaml" \
             && success "Applied. Make image '${IMAGE}' available to the cluster (registry push or 'kind load')." || error_exit "kubectl apply failed."
         info "Reach the API: kubectl -n ${K8S_NS} port-forward svc/marker-api 8000:8000"
     fi
@@ -145,7 +170,7 @@ svc_teardown() {
     if [[ "$target" == docker ]]; then _need_docker
         _compose down && success "Stack stopped (named volumes kept)." || error_exit "compose down failed."
     else _need_kubectl
-        kubectl delete -f "${K8S}/worker.yaml" -f "${K8S}/api.yaml" -f "${K8S}/redis.yaml" --ignore-not-found
+        kubectl delete -f "${K8S}/worker.yaml" -f "${K8S}/api.yaml" -f "${K8S}/redis.yaml" -f "${K8S}/networkpolicy.yaml" --ignore-not-found
         info "Data kept. To remove everything: kubectl delete ns ${K8S_NS}"
     fi
 }

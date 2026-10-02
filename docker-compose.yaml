@@ -16,10 +16,26 @@
 # because without PROTOCOL_DROID_TOKEN it is unauthenticated. To expose it, set
 # BOTH in .env: PROTOCOL_DROID_TOKEN=<long random secret> and API_BIND=0.0.0.0
 # (callers then send `Authorization: Bearer <token>`).
+#
+# Redis requires AUTH when REDIS_PASSWORD is set; `protocol-droid.sh service
+# deploy` generates one into .env on first deploy. A plain `docker compose up`
+# without it runs Redis without a password (still unpublished, compose network
+# only). The password reaches redis-server through a config file, not argv.
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
+          exec redis-server /tmp/redis.conf
+        fi
+        exec redis-server
     volumes:
       - redis-data:/data
 
@@ -30,6 +46,7 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       INPUT_DIR: /data/input
       OUTPUT_DIR: /data/output
       RESULT_TTL: ${RESULT_TTL:-86400}
@@ -50,6 +67,7 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: redis://redis:6379/0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       OUTPUT_DIR: /data/output
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}   # only needed for use_llm (marker's Gemini service)
     volumes:

@@ -1,3 +1,8 @@
+# Redis requires AUTH: the password comes from the `marker-redis` Secret, which
+# `protocol-droid.sh service deploy --target k8s` creates when it is missing.
+# Applying by hand? Create it first:
+#   kubectl -n marker create secret generic marker-redis --from-literal=password="$(openssl rand -hex 24)"
+# The pod refuses to start without it. networkpolicy.yaml limits who can connect.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +19,14 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          # Through a config file, not --requirepass: keeps the secret off argv.
+          command: ["sh", "-c"]
+          args:
+            - printf 'requirepass %s\n' "$REDIS_PASSWORD" > /tmp/redis.conf && exec redis-server /tmp/redis.conf
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: marker-redis, key: password }
           ports:
             - containerPort: 6379
           resources:

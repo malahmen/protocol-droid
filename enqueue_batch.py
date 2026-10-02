@@ -6,13 +6,12 @@ Usage:
   python enqueue_batch.py <input_dir> [--output_dir DIR] [--output_format FMT]
                           [--use_llm] [--force_ocr]
 
-Env mirrors the workers: REDIS_URL, MARKER_QUEUE, OUTPUT_DIR, OUTPUT_FORMAT,
+Env mirrors the workers: REDIS_URL, REDIS_PASSWORD, MARKER_QUEUE, OUTPUT_DIR, OUTPUT_FORMAT,
 JOB_TIMEOUT, RESULT_TTL (seconds a result/failure stays in Redis; default 24h).
 """
 import argparse
 import os
 
-from redis import Redis
 from rq import Queue
 
 import tasks
@@ -36,7 +35,7 @@ def main():
         raise SystemExit(f"not a directory: {args.input_dir}")
 
     result_ttl = int(os.environ.get("RESULT_TTL", "86400"))
-    conn = Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+    conn = tasks.redis_connection()
     queue = Queue(
         os.environ.get("MARKER_QUEUE", "marker"),
         connection=conn,
