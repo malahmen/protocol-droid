@@ -25,6 +25,7 @@ services:
 
   api:
     build: .
+    image: marker-service:latest   # one tag for compose, `service build` and the k8s manifests
     command: uvicorn api:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     environment:
@@ -44,6 +45,7 @@ services:
 
   worker:
     build: .
+    image: marker-service:latest   # one tag for compose, `service build` and the k8s manifests
     command: python worker.py
     restart: unless-stopped
     environment:

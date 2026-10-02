@@ -25,8 +25,9 @@
 #   LLAMA_USE_PREBUILT_UI=OFF  skip the build-time download of the server's Web
 #                          UI bundle from the HF bucket; surya only speaks to
 #                          /health, /v1/models and /v1/chat/completions.
-# bookworm matches the python:3.12-slim base; building on the older glibc keeps
-# the binary loadable if that base moves to a newer Debian.
+# Built on bookworm (glibc 2.36) while python:3.12-slim has moved on to trixie:
+# a binary linked against the older glibc loads on the newer one, so the runtime
+# base can keep moving without rebuilding this stage differently.
 FROM debian:bookworm-slim AS llama
 # Pinned tag (bump deliberately, with a rebuild). Floor: surya's GGUF is a
 # qwen35 multimodal model, so the server needs qwen35 + mtmd support — anything
@@ -71,9 +72,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System libs marker's OpenCV/image stack needs at runtime.
+# System libs: libgl1/libglib2.0 for marker's OpenCV/image stack; libgomp1 is
+# GNU OpenMP, which llama-server's libggml-cpu links against. The build stage
+# gets it from build-essential, the slim runtime base does not ship it, and
+# without it llama-server fails to load (no OCR at all).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
+        libgl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # surya's OCR backend, from stage 1: the server binary plus the shared libraries
@@ -89,14 +93,25 @@ RUN ldconfig
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# marker downloads a rendering font on the first conversion, into its own
+# package dir (site-packages/static/fonts). That dir is root-owned and the
+# service runs as uid 1000, so every conversion failed with EACCES. Fetch it
+# now, as root, so nothing has to be written there at runtime.
+RUN python -c "from marker.util import download_font; download_font()" \
+    && python -c "import os; from marker.settings import settings; assert os.path.getsize(settings.FONT_PATH) > 0, settings.FONT_PATH"
+
 COPY tasks.py worker.py api.py enqueue_batch.py ./
 
 # Run unprivileged. /data/{input,output} and /models are the mount points; a
 # host bind mount must be writable by uid 1000 (k8s: fsGroup 1000 or an RWX
 # class that maps ownership). The `models` named volume inherits app's ownership.
+# /home/app is chowned explicitly: HOME points there from the ENV above, so the
+# root-run build steps (pip) already created a root-owned /home/app/.cache, and
+# useradd does not take over a home that exists. surya then could not create
+# ~/.cache/datalab and every conversion failed with EACCES.
 RUN useradd --system --uid 1000 --create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /data/input /data/output /models \
-    && chown -R app:app /data /models
+    && mkdir -p /data/input /data/output /models /home/app \
+    && chown -R app:app /data /models /home/app
 USER app
 
 # Default role: worker. Override in compose/k8s for the API or batch enqueuer.

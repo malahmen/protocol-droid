@@ -192,12 +192,19 @@ The image builds that binary itself (multi-stage, from `ggml-org/llama.cpp`
   several GB) into `HF_HOME=/models`, and the server holds them resident next to
   marker's models — hence the 12Gi worker memory limit in `k8s/worker.yaml`.
 
+`service build` and `service deploy` probe the freshly built image with
+`llama-server --version` and say whether OCR will work; `service status` repeats
+the check, mirroring what `local status` reports for a host install. A missing
+binary is reported, not fatal — text-layer PDFs still convert. `service deploy
+--target k8s` cannot build as part of `kubectl apply`, so it builds the image
+first when it is not already present locally.
+
 `use_llm` needs `GOOGLE_API_KEY` (marker's env name for its Gemini service) —
 set it in `.env`, compose passes it to the workers.
 
 ```sh
 # Docker Compose
-protocol-droid.sh service build                                      # just build the image
+protocol-droid.sh service build                                      # just build the image (+ verify OCR)
 protocol-droid.sh service deploy --input ./input --output ./output   # build + start (2 workers)
 protocol-droid.sh service scale --replicas 4
 protocol-droid.sh service enqueue --dir /data/input                  # convert everything mounted
