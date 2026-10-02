@@ -105,9 +105,13 @@ COPY tasks.py worker.py api.py enqueue_batch.py ./
 # Run unprivileged. /data/{input,output} and /models are the mount points; a
 # host bind mount must be writable by uid 1000 (k8s: fsGroup 1000 or an RWX
 # class that maps ownership). The `models` named volume inherits app's ownership.
+# /home/app is chowned explicitly: HOME points there from the ENV above, so the
+# root-run build steps (pip) already created a root-owned /home/app/.cache, and
+# useradd does not take over a home that exists. surya then could not create
+# ~/.cache/datalab and every conversion failed with EACCES.
 RUN useradd --system --uid 1000 --create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /data/input /data/output /models \
-    && chown -R app:app /data /models
+    && mkdir -p /data/input /data/output /models /home/app \
+    && chown -R app:app /data /models /home/app
 USER app
 
 # Default role: worker. Override in compose/k8s for the API or batch enqueuer.
