@@ -13,6 +13,17 @@ os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+
+def redis_connection(url: str | None = None):
+    """The Redis connection every role uses (api, worker, batch enqueuer).
+
+    The password comes from REDIS_PASSWORD rather than the URL, so it needs no
+    URL-encoding and never shows up in a logged REDIS_URL. Unset means no AUTH.
+    """
+    from redis import Redis
+    return Redis.from_url(url or os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+                          password=os.environ.get("REDIS_PASSWORD") or None)
+
 _models = None
 
 

@@ -11,6 +11,8 @@ metadata:
 spec:
   backoffLimit: 1
   template:
+    metadata:
+      labels: { app: marker-batch }   # networkpolicy.yaml lets this label reach Redis
     spec:
       # The image runs as uid/gid 1000 (`app`, see Dockerfile). fsGroup makes the
       # kubelet apply gid 1000 to the mounted PVCs, so the process can write
@@ -31,6 +33,9 @@ spec:
           command: ["python", "enqueue_batch.py", "/data/input"]
           env:
             - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: marker-redis, key: password }
             - { name: OUTPUT_DIR, value: "/data/output" }
             - { name: OUTPUT_FORMAT, value: "markdown" }
           volumeMounts:

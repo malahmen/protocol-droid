@@ -6,11 +6,11 @@ Pre-warms the models at startup so the first job isn't slow.
 
 Env:
   REDIS_URL   default redis://localhost:6379/0
+  REDIS_PASSWORD  Redis AUTH password (unset = no AUTH)
   MARKER_QUEUE default "marker"
 """
 import os
 
-from redis import Redis
 from rq import Queue, SimpleWorker
 
 import tasks
@@ -25,7 +25,7 @@ def main():
     tasks.get_models()
     print(f"[worker] ready — consuming '{queue_name}' from {redis_url}", flush=True)
 
-    conn = Redis.from_url(redis_url)
+    conn = tasks.redis_connection(redis_url)
     queue = Queue(queue_name, connection=conn)
     SimpleWorker([queue], connection=conn).work()
 

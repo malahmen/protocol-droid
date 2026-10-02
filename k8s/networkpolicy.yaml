@@ -1,0 +1,22 @@
+# Only the service's own pods may talk to Redis. RQ jobs are pickled callables,
+# so anything that can write to the queue can run code in the workers: AUTH
+# (the marker-redis Secret) and this policy together keep the queue closed.
+# Needs a CNI that enforces NetworkPolicy (Calico, Cilium, kindnet >= kind
+# v0.24); on one that doesn't, the policy is accepted and ignored, and AUTH
+# still applies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-clients-only
+  namespace: marker
+spec:
+  podSelector:
+    matchLabels: { app: marker-redis }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [marker-api, marker-worker, marker-batch] }
+      ports:
+        - { protocol: TCP, port: 6379 }

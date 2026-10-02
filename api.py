@@ -8,6 +8,7 @@ workers, not in this process.
 
 Env:
   REDIS_URL             default redis://localhost:6379/0
+  REDIS_PASSWORD        Redis AUTH password (unset = no AUTH)
   MARKER_QUEUE          default "marker"
   INPUT_DIR             default /data/input  — `path` must live under it
   OUTPUT_DIR            default /data/output — `output_dir` must live under it
@@ -22,7 +23,6 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
-from redis import Redis
 from redis.exceptions import RedisError
 from rq import Queue
 from rq.exceptions import NoSuchJobError
@@ -58,7 +58,7 @@ def confine(path: str, root: str, what: str) -> str:
 
 
 app = FastAPI(title="protocol-droid conversion API", dependencies=[Depends(require_token)])
-_conn = Redis.from_url(REDIS_URL)
+_conn = tasks.redis_connection(REDIS_URL)
 _queue = Queue(QUEUE_NAME, connection=_conn, default_timeout=JOB_TIMEOUT)
 
 
