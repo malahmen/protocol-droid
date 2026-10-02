@@ -123,6 +123,8 @@ plain `python3` in that range also works) and **pipx** (installed by `setup`);
 each lives in its own pipx environment. Default output dir is `./converted`.
 After a successful conversion the output folder is revealed in your file
 manager; set `PROTOCOL_DROID_NO_OPEN=1` to suppress that (CI, cron, TUIs).
+`local convert` exits non-zero when any file failed to convert (in `auto` mode,
+after both backends have run), so a cron job or CI step sees the failure.
 
 ### Service mode (containerized, scalable)
 

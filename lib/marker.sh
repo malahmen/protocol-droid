@@ -136,7 +136,7 @@ marker_convert() {
 
     marker_require; marker_check_surya; marker_apply_hf_offline; mkdir -p "$out_dir"
 
-    local mode in_dir label tmp="" bin
+    local mode in_dir label tmp="" bin rc=0
     if (( ${#paths[@]} == 1 )) && [[ -f "${paths[0]}" ]]; then mode=single
     elif (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then mode="batch"; in_dir="${paths[0]}"; label="${paths[0]}"
     else mode="batch"; tmp=$(link_into_tmp "${paths[@]}") || error_exit "Could not stage the selection for batch."; in_dir="$tmp"; label="${#paths[@]} selected files"; fi
@@ -146,7 +146,7 @@ marker_convert() {
         bin=$(resolve_bin "$MARKER_PKG" marker_single) || error_exit "marker_single not found — run setup."
         info "Converting ${paths[0]} → ${out_fmt} in ${out_dir}/"
         if "$bin" "${paths[0]}" --output_format "$out_fmt" --output_dir "$out_dir" "${extra[@]}"; then success "Done → ${out_dir}/"; open_path "$out_dir"
-        else warn "Conversion failed for: ${paths[0]}"; fi
+        else warn "Conversion failed for: ${paths[0]}"; rc=1; fi
     else
         if [[ -n "$workers" ]]; then
             [[ "$workers" =~ ^[0-9]+$ ]] && (( workers >= 1 )) && extra+=(--workers "$workers") || warn "Invalid worker count '${workers}', letting marker decide."
@@ -155,10 +155,12 @@ marker_convert() {
         bin=$(resolve_bin "$MARKER_PKG" marker) || { [[ -n "$tmp" ]] && rm -rf "$tmp"; error_exit "marker (batch CLI) not found — run setup."; }
         info "Converting ${label} → ${out_fmt} in ${out_dir}/"
         if "$bin" "$in_dir" --output_format "$out_fmt" --output_dir "$out_dir" "${extra[@]}"; then success "Done → ${out_dir}/"; open_path "$out_dir"
-        else warn "Batch conversion reported errors."; fi
-        [[ -n "$tmp" ]] && rm -rf "$tmp"
+        else warn "Batch conversion reported errors."; rc=1; fi
+        if [[ -n "$tmp" ]]; then rm -rf "$tmp"; fi
     fi
-    return 0   # not the status of the trailing `[[ ]] && rm` (false when nothing was staged)
+    # The conversion's own status: cron/CI callers rely on it, and the TUI runs
+    # this through engine_foreground, so a non-zero exit no longer closes it.
+    return "$rc"
 }
 
 marker_status() {
