@@ -96,7 +96,7 @@ def enqueue(body: JobIn):
         opts["page_range"] = body.page_range
 
     try:
-        job = _queue.enqueue(tasks.convert_document, path, opts,
+        job = _queue.enqueue(tasks.convert_document, path, opts, input_root=INPUT_DIR,
                              result_ttl=RESULT_TTL, failure_ttl=RESULT_TTL)
     except RedisError:
         raise HTTPException(503, "redis unavailable")
