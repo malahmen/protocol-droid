@@ -43,6 +43,7 @@ def main():
         default_timeout=int(os.environ.get("JOB_TIMEOUT", "3600")),
     )
 
+    input_root = os.path.realpath(args.input_dir)
     count = 0
     for root, _dirs, files in os.walk(args.input_dir):
         for name in sorted(files):
@@ -54,7 +55,10 @@ def main():
                 opts["use_llm"] = True
             if args.force_ocr:
                 opts["force_ocr"] = True
-            queue.enqueue(tasks.convert_document, path, opts, result_ttl=result_ttl, failure_ttl=result_ttl)
+            # input_root: the output mirrors the tree under input_dir, so files
+            # with the same name in different folders don't overwrite each other.
+            queue.enqueue(tasks.convert_document, path, opts, input_root=input_root,
+                          result_ttl=result_ttl, failure_ttl=result_ttl)
             count += 1
 
     print(f"enqueued {count} document(s) onto the '{queue.name}' queue")

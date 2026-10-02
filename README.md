@@ -151,6 +151,12 @@ after both backends have run), so a cron job or CI step sees the failure.
 - **redis** — the job queue and result store. Results and failures are kept for
   `RESULT_TTL` seconds (default 24 h), then expire — poll and collect within
   that window; the converted files themselves stay in `/data/output`.
+- **Output layout.** Each document gets its own folder that mirrors its path
+  under the input root, with the extension kept in the folder name:
+  `/data/input/a/report.pdf` → `/data/output/a/report_pdf/report.md` (plus its
+  images). Files with the same name in different folders, or with different
+  extensions, therefore never overwrite each other. A job's `result` is that
+  folder.
 - **enqueue_batch.py** — a producer that walks a folder and enqueues every
   supported file in one shot.
 

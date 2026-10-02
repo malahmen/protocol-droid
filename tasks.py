@@ -25,12 +25,42 @@ def get_models():
     return _models
 
 
-def convert_document(fpath: str, options: dict | None = None) -> str:
+def output_folder(fpath: str, output_dir: str, input_root: str | None = None) -> str:
+    """Where one document's output goes: <output_dir>/<relative dir>/<stem>_<ext>/.
+
+    marker's own get_output_folder uses <output_dir>/<stem>/, so a/report.pdf,
+    b/report.pdf and report.docx all land in one folder and silently overwrite
+    each other in a recursive batch. Mirroring the input tree (relative to
+    `input_root`) and keeping the extension in the folder name gives every input
+    its own folder. Without `input_root`, or for a path outside it, only the
+    file name is used.
+    """
+    name = os.path.basename(fpath)
+    rel_dir = ""
+    if input_root:
+        # Resolve the directory only, so a symlinked file keeps its own name.
+        root = os.path.realpath(input_root)
+        real_dir = os.path.realpath(os.path.dirname(os.path.abspath(fpath)))
+        if os.path.commonpath([root, real_dir]) == root:
+            rel_dir = os.path.relpath(real_dir, root)
+            if rel_dir == os.curdir:
+                rel_dir = ""
+    stem, ext = os.path.splitext(name)
+    folder = f"{stem}_{ext[1:].lower()}" if ext else stem
+    out = os.path.join(output_dir, rel_dir, folder)
+    os.makedirs(out, exist_ok=True)
+    return out
+
+
+def convert_document(fpath: str, options: dict | None = None, input_root: str | None = None) -> str:
     """Convert one document with marker; returns the output folder.
 
     `options` mirrors marker_single's flags, e.g.:
       {"output_format": "markdown", "output_dir": "/data/output",
        "use_llm": True, "force_ocr": True, "page_range": "0,5-10"}
+    `input_root` is the folder the job's path is relative to (the API's
+    INPUT_DIR, or the folder enqueue_batch walked); the output mirrors the path
+    under it. Jobs queued without it still work and use the file name alone.
     """
     from marker.config.parser import ConfigParser
     from marker.output import save_output
@@ -50,6 +80,7 @@ def convert_document(fpath: str, options: dict | None = None) -> str:
         llm_service=config_parser.get_llm_service(),
     )
     rendered = converter(fpath)
-    out_folder = config_parser.get_output_folder(fpath)
+    out_dir = (options or {}).get("output_dir") or os.environ.get("OUTPUT_DIR", "/data/output")
+    out_folder = output_folder(fpath, out_dir, input_root)
     save_output(rendered, out_folder, config_parser.get_base_filename(fpath))
     return out_folder
