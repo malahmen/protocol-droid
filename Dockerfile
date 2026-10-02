@@ -93,6 +93,13 @@ RUN ldconfig
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# marker downloads a rendering font on the first conversion, into its own
+# package dir (site-packages/static/fonts). That dir is root-owned and the
+# service runs as uid 1000, so every conversion failed with EACCES. Fetch it
+# now, as root, so nothing has to be written there at runtime.
+RUN python -c "from marker.util import download_font; download_font()" \
+    && python -c "import os; from marker.settings import settings; assert os.path.getsize(settings.FONT_PATH) > 0, settings.FONT_PATH"
+
 COPY tasks.py worker.py api.py enqueue_batch.py ./
 
 # Run unprivileged. /data/{input,output} and /models are the mount points; a
