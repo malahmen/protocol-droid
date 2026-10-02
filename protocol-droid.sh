@@ -95,11 +95,20 @@ auto_convert() {
     done
 
     # Both backends share one output dir, so suppress their per-run open_path and reveal it once.
-    (( ${#m_files[@]} > 0 )) && { info "auto: ${#m_files[@]} file(s) → marker"; PROTOCOL_DROID_NO_OPEN=1 marker_convert --output-dir "$out_dir" "${m_files[@]}"; }
-    (( ${#d_files[@]} > 0 )) && { info "auto: ${#d_files[@]} file(s) → markitdown"; PROTOCOL_DROID_NO_OPEN=1 markitdown_convert --output-dir "$out_dir" "${d_files[@]}"; }
+    # A failure in one backend must not skip the other (`|| rc=1`, not errexit),
+    # and must still show in the exit status.
+    local rc=0
+    if (( ${#m_files[@]} > 0 )); then
+        info "auto: ${#m_files[@]} file(s) → marker"
+        PROTOCOL_DROID_NO_OPEN=1 marker_convert --output-dir "$out_dir" "${m_files[@]}" || rc=1
+    fi
+    if (( ${#d_files[@]} > 0 )); then
+        info "auto: ${#d_files[@]} file(s) → markitdown"
+        PROTOCOL_DROID_NO_OPEN=1 markitdown_convert --output-dir "$out_dir" "${d_files[@]}" || rc=1
+    fi
     if (( ${#m_files[@]} == 0 && ${#d_files[@]} == 0 )); then warn "auto: nothing to convert."
     elif [[ -d "$out_dir" ]]; then open_path "$out_dir"; fi
-    return 0
+    return "$rc"
 }
 
 local_main() {

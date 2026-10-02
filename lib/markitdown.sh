@@ -107,9 +107,13 @@ markitdown_convert() {
         info "Converting ${f} ..."
         if "$bin" "$f" -o "$out" "${extra[@]}"; then success "→ ${out}"; ok=$((ok+1)); else warn "Failed: ${f}"; fail=$((fail+1)); fi
     done
-    success "Done — ${ok} converted, ${fail} failed → ${out_dir}/"
-    (( ok > 0 )) && open_path "$out_dir"
-    return 0   # not the status of the trailing `(( )) &&` (false when nothing converted)
+    if (( fail > 0 )); then warn "Done — ${ok} converted, ${fail} failed → ${out_dir}/"
+    else success "Done — ${ok} converted → ${out_dir}/"; fi
+    if (( ok > 0 )); then open_path "$out_dir"; fi
+    # Non-zero when any file failed, so cron/CI see it (the TUI runs this
+    # through engine_foreground and survives a non-zero exit).
+    if (( fail > 0 )); then return 1; fi
+    return 0
 }
 
 markitdown_status() {
