@@ -14,6 +14,8 @@ Env:
   OUTPUT_DIR            default /data/output — `output_dir` must live under it
   JOB_TIMEOUT           default 3600 (seconds)
   RESULT_TTL            default 86400 (seconds) — how long results/failures stay in Redis
+  PAGE_RANGE_MAX_PAGES  default 2000 — most pages one job's page_range may cover
+  PAGE_RANGE_MAX_INDEX  default 100000 — highest page number a page_range may name
   PROTOCOL_DROID_TOKEN  when set, every request needs `Authorization: Bearer <token>`
                         (unset = open API: keep it bound to localhost, see docker-compose.yaml)
 """
@@ -84,16 +86,27 @@ def healthz():
 def enqueue(body: JobIn):
     path = confine(body.path, INPUT_DIR, "path")
     output_dir = confine(body.output_dir or OUTPUT_DIR, OUTPUT_DIR, "output_dir")
+    # Both are rejected here with a 400 rather than left for the worker.
+    # output_format reached marker unchecked and failed the job; page_range
+    # reached it unbounded and killed the worker — SimpleWorker runs jobs
+    # in-process, so "0-999999999" took the whole service down (exit 137)
+    # rather than failing one request.
+    try:
+        output_format = tasks.validate_output_format(body.output_format)
+        page_range = tasks.validate_page_range(body.page_range) if body.page_range else None
+    except tasks.InvalidOption as exc:
+        raise HTTPException(400, str(exc))
+
     opts = {
-        "output_format": body.output_format,
+        "output_format": output_format,
         "output_dir": output_dir,
     }
     if body.use_llm:
         opts["use_llm"] = True
     if body.force_ocr:
         opts["force_ocr"] = True
-    if body.page_range:
-        opts["page_range"] = body.page_range
+    if page_range:
+        opts["page_range"] = page_range
 
     try:
         job = _queue.enqueue(tasks.convert_document, path, opts, input_root=INPUT_DIR,
