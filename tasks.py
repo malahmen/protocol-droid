@@ -7,11 +7,87 @@ whole point of a long-lived worker is to avoid that). Run with an RQ
 reused safely across jobs.
 """
 import os
+import re
 
 # Match marker's CLI environment (quiet gRPC/glog, MPS fallback for Macs).
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+
+# --- option validation -------------------------------------------------------
+#
+# Checked here rather than only in api.py so that every route into the queue is
+# covered: the API, enqueue_batch.py, and anything that enqueues
+# convert_document directly. The API turns these into 400s.
+#
+# page_range is CAPPED, not just parsed. marker expands the range eagerly, so
+# "0-999999999" parses fine and then builds a list of a billion page numbers:
+# the worker was OOM-killed (137). SimpleWorker runs jobs in-process, which is
+# what makes that fatal — the worker dies WITH the job instead of failing it,
+# taking every queued job's processing with it. A rejected request costs one
+# 400; an accepted one costs the service.
+PAGE_RANGE_MAX_PAGES = int(os.environ.get("PAGE_RANGE_MAX_PAGES", "2000"))
+PAGE_RANGE_MAX_INDEX = int(os.environ.get("PAGE_RANGE_MAX_INDEX", "100000"))
+OUTPUT_FORMATS = ("markdown", "json", "html", "chunks")
+
+# [0-9]+ and not str.isdigit(): isdigit() is true for '²' and other Unicode
+# digit characters that int() then refuses, which would turn a bad request into
+# an unhandled ValueError.
+_NUM_RE = re.compile(r"[0-9]+\Z")
+
+
+class InvalidOption(ValueError):
+    """An option this service will not pass on to marker."""
+
+
+def validate_output_format(fmt: str) -> str:
+    if fmt not in OUTPUT_FORMATS:
+        raise InvalidOption("output_format must be one of " + ", ".join(OUTPUT_FORMATS))
+    return fmt
+
+
+def validate_page_range(spec: str) -> str:
+    """Normalise and cap a marker page_range such as "0,5-10".
+
+    0-indexed and inclusive, matching marker. Returns the normalised spec.
+    """
+    text = (spec or "").strip()
+    if not text:
+        raise InvalidOption("page_range is empty")
+    total = 0
+    parts = []
+    for raw in text.split(","):
+        item = raw.strip()
+        if not item:
+            raise InvalidOption("page_range has an empty element")
+        lo_s, sep, hi_s = item.partition("-")
+        if not _NUM_RE.match(lo_s) or (sep and not _NUM_RE.match(hi_s)):
+            raise InvalidOption(f"page_range element {item!r} is not a page or a page range")
+        lo = int(lo_s)
+        hi = int(hi_s) if sep else lo
+        if hi < lo:
+            raise InvalidOption(f"page_range element {item!r} counts backwards")
+        if hi > PAGE_RANGE_MAX_INDEX:
+            raise InvalidOption(
+                f"page_range element {item!r} is past the maximum page index "
+                f"{PAGE_RANGE_MAX_INDEX}")
+        total += hi - lo + 1
+        if total > PAGE_RANGE_MAX_PAGES:
+            raise InvalidOption(
+                f"page_range covers more than {PAGE_RANGE_MAX_PAGES} pages")
+        parts.append(f"{lo}-{hi}" if sep else str(lo))
+    return ",".join(parts)
+
+
+def validate_options(options: dict | None) -> dict:
+    """A copy of `options` with the two caller-supplied knobs checked."""
+    opts = dict(options or {})
+    if "output_format" in opts:
+        validate_output_format(opts["output_format"])
+    if opts.get("page_range"):
+        opts["page_range"] = validate_page_range(opts["page_range"])
+    return opts
 
 
 def redis_connection(url: str | None = None):
@@ -80,7 +156,9 @@ def convert_document(fpath: str, options: dict | None = None, input_root: str | 
         raise FileNotFoundError(fpath)
 
     models = get_models()
-    config_parser = ConfigParser(options or {})
+    # Re-checked in the worker, not only at the API: a job that reaches the
+    # queue by another route must not be able to OOM this process either.
+    config_parser = ConfigParser(validate_options(options))
 
     converter_cls = config_parser.get_converter_cls()
     converter = converter_cls(
