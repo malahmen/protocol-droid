@@ -1,5 +1,7 @@
 # protocol-droid
 
+[![ci](https://github.com/malahmen/protocol-droid/actions/workflows/ci.yml/badge.svg)](https://github.com/malahmen/protocol-droid/actions/workflows/ci.yml)
+
 > "I am C-3PO, human–cyborg relations." — fluent in over six million forms of
 > communication, and now a few document formats too.
 
@@ -288,6 +290,59 @@ reachable by the cluster yourself (registry push, or `kind load docker-image`).
   build also compiles `llama-server` from source (surya's OCR backend), so the
   build needs network access to GitHub and a few minutes of CPU; nothing extra
   is required at runtime.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+**19 tests**, standard library only — no network, no models, no worker, no
+queue. They cover the two places where a value from outside decides what the
+code does with a file.
+
+| File | Tests | What it pins |
+| --- | ---: | --- |
+| `tests/test_options.py` | 12 | `--page-range` and `--output-format` validation |
+| `tests/test_output_folder.py` | 7 | which name an output file gets, including collisions and symlinks |
+
+The page-range tests exist because of a specific incident, and one of them is
+named after it: a range the worker accepted and then died on. Validation now
+rejects it up front, with two separate caps — on the **total pages** a range
+can ask for and on the **highest index** it may name — so neither
+`1-999999999` nor a thousand small pieces adding up to the same thing gets
+through. Both caps are environment variables rather than constants:
+
+| Variable | Default | Limits |
+| --- | ---: | --- |
+| `PAGE_RANGE_MAX_PAGES` | `2000` | how many pages one range may ask for in total |
+| `PAGE_RANGE_MAX_INDEX` | `100000` | the highest page number it may name |
+
+Two of the tests are about not being clever: that validation **normalises and
+leaves the rest alone**, and that it does **not mutate the caller's dict**. And
+one is about Unicode digits, which `str.isdigit()` accepts and `int()` then
+refuses — so the pattern is an explicit `[0-9]+` match rather than a character
+class that means more than it looks like.
+
+The output-folder tests are all about the same question asked different ways:
+two inputs with the same basename in different folders, the same stem with
+different extensions, a symlinked file, a symlinked root on either side, and a
+path outside the root or with no root at all.
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
+`main`, every pull request, and on demand:
+
+- `python3 -m compileall` over `api.py`, `tasks.py`, `worker.py` and
+  `enqueue_batch.py` — a syntax check of every module, which is as far as a
+  runner can go without the model weights.
+- `python3 -m unittest discover -s tests -v`.
+
+Neither backend is installed in CI. `marker` needs several GB of model
+weights and `markitdown` needs ffmpeg, and a conversion is only meaningfully
+checked by converting something — so the suite deliberately covers the logic
+that decides *what* to convert rather than the conversion.
 
 ## License
 
