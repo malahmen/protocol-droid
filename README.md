@@ -346,7 +346,7 @@ that decides *what* to convert rather than the conversion.
 
 ## License
 
-Released into the public domain — see [LICENSE](LICENSE) (Unlicense). The
+[MIT](LICENSE) © 2026 malahmen. The
 converters it drives are licensed separately:
 [marker](https://github.com/datalab-to/marker) by Datalab and
 [markitdown](https://github.com/microsoft/markitdown) by Microsoft — see their
