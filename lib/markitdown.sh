@@ -78,12 +78,14 @@ markitdown_scan() {
 
 # markitdown has no batch mode: one .md per input file (loop). Flags:
 #   --output-dir DIR   (default ./converted)
+#   --no-clobber       keep an existing doc.md and write doc_2.md instead
 #   -- <markitdown args...>   forwarded verbatim (e.g. --use-plugins, -d, -e URL)
 markitdown_convert() {
-    local out_dir="$DEFAULT_OUTPUT_DIR" paths=() extra=()
+    local out_dir="$DEFAULT_OUTPUT_DIR" paths=() extra=() clobber=true input_root=""
     while [[ $# -gt 0 ]]; do case "$1" in
         --output-dir) out_dir="$2"; shift 2 ;;
         --output-format) shift 2 ;;   # accepted+ignored (markitdown only emits Markdown)
+        --no-clobber) clobber=false; shift ;;
         --) shift; extra+=("$@"); break ;;
         -*) error_exit "markitdown convert: unknown flag: $1 (forward markitdown flags after --)" ;;
         *) paths+=("$1"); shift ;;
@@ -94,26 +96,60 @@ markitdown_convert() {
     local bin; bin=$(resolve_bin "$MID_PKG" markitdown) || error_exit "markitdown not found — run setup."
     mkdir -p "$out_dir"
 
-    # Expand a single directory argument into its convertible files.
+    # Expand a single directory argument into its convertible files. The
+    # directory is also the provenance input root, so each sidecar records the
+    # source path relative to it.
     if (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then
-        local listed; listed=$(scan_files "${paths[0]}" "$DEFAULT_DEPTH" "${MID_EXTS[@]}") || { warn "No supported files under ${paths[0]}."; return 0; }
+        input_root="${paths[0]}"
+        local listed
+        listed=$(scan_files "${paths[0]}" "$DEFAULT_DEPTH" "${MID_EXTS[@]}") || {
+            warn "No supported files under ${paths[0]} (markitdown handles: ${MID_EXTS[*]})."
+            return "$EX_NOTHING"
+        }
         mapfile -t paths <<< "$listed"
     fi
 
-    local ok=0 fail=0 f base stem out
+    local ok=0 fail=0 missing=0 noprov=0 f base stem out started ver
+    ver="$(markitdown_version)"
     for f in "${paths[@]}"; do
-        [[ -f "$f" ]] || { warn "Skipping (not a file): $f"; continue; }
-        base="$(basename "$f")"; stem="${base%.*}"; out="$(unique_out "$out_dir" "$stem" md)"
+        # Counted, not just warned about: a path the caller named and this tool
+        # never opened is the case that used to exit 0.
+        [[ -f "$f" ]] || { warn "Not a file: $f"; missing=$((missing+1)); continue; }
+        base="$(basename "$f")"; stem="${base%.*}"
+        out="$(out_path "$out_dir" "$stem" md "$clobber")"
         info "Converting ${f} ..."
-        if "$bin" "$f" -o "$out" "${extra[@]}"; then success "→ ${out}"; ok=$((ok+1)); else warn "Failed: ${f}"; fail=$((fail+1)); fi
+        started="$(now_epoch)"
+        if "$bin" "$f" -o "$out" "${extra[@]}"; then
+            success "→ ${out}"; ok=$((ok+1))
+            # Named after the output rather than plain provenance.json: every
+            # input in this run writes into the SAME folder, so one shared name
+            # would mean the last document silently owning the whole batch's
+            # provenance.
+            provenance_write "$out_dir" "$f" markitdown "markitdown=${ver}" \
+                "$started" "$(now_epoch)" markdown "$input_root" \
+                "$(basename "$out").provenance.json" "$(basename "$out")" \
+                -- "$bin" "$f" -o "$out" "${extra[@]}" || noprov=$((noprov+1))
+        else
+            warn "Failed: ${f}"; fail=$((fail+1))
+        fi
     done
-    if (( fail > 0 )); then warn "Done — ${ok} converted, ${fail} failed → ${out_dir}/"
-    else success "Done — ${ok} converted → ${out_dir}/"; fi
+
+    local summary="${ok} converted"
+    (( fail > 0 ))    && summary+=", ${fail} failed"
+    (( missing > 0 )) && summary+=", ${missing} missing"
+    (( noprov > 0 ))  && summary+=", ${noprov} without provenance"
+    if (( fail + missing + noprov > 0 )); then warn "Done — ${summary} → ${out_dir}/"
+    else success "Done — ${summary} → ${out_dir}/"; fi
     if (( ok > 0 )); then open_path "$out_dir"; fi
-    # Non-zero when any file failed, so cron/CI see it (the TUI runs this
-    # through engine_foreground and survives a non-zero exit).
-    if (( fail > 0 )); then return 1; fi
-    return 0
+
+    # The conversion's own status, so cron/CI see it (the TUI runs this through
+    # engine_foreground and survives a non-zero exit). A missing input only
+    # wins when nothing actually failed, because a real failure is the more
+    # urgent of the two.
+    if (( fail > 0 || noprov > 0 )); then return "$EX_FAILED"; fi
+    if (( missing > 0 )); then return "$EX_NO_INPUT"; fi
+    if (( ok == 0 )); then return "$EX_NOTHING"; fi
+    return "$EX_OK"
 }
 
 markitdown_status() {

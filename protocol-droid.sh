@@ -67,6 +67,18 @@ EOF
 # Convert with backend=auto: partition inputs by extension and hand each group
 # to the backend that fits (PDF/images -> marker; the rest -> markitdown).
 AUTO_MARKER_EXTS=(pdf png jpg jpeg tiff tif webp gif bmp)
+
+# _worse A B — the exit code that should win when two runs disagree.
+# Severity order, not numeric order: a failure (1) outranks a missing input (2),
+# which outranks nothing-to-convert (3). Taking the larger number would let an
+# empty second backend hide the first one's failure.
+_EX_SEVERITY=([0]=0 [3]=1 [2]=2 [1]=3)
+_worse() {
+    local a="${1:-0}" b="${2:-0}"
+    local sa="${_EX_SEVERITY[$a]:-3}" sb="${_EX_SEVERITY[$b]:-3}"
+    (( sb > sa )) && { printf '%s' "$b"; return; }
+    printf '%s' "$a"
+}
 _ext_lower() { local b="${1##*/}"; local e="${b##*.}"; printf '%s' "${e,,}"; }
 _is_marker_ext() { local e="$1" m; for m in "${AUTO_MARKER_EXTS[@]}"; do [[ "$e" == "$m" ]] && return 0; done; return 1; }
 
@@ -81,33 +93,50 @@ auto_convert() {
     (( ${#paths[@]} > 0 )) || error_exit "auto convert: no input path given."
 
     # Expand a single directory into the union of both backends' file types.
+    # An empty one is EX_NOTHING rather than error_exit's 1: "this folder holds
+    # nothing I convert" is not the same answer as "a conversion failed", and
+    # the markitdown backend already distinguished them.
     if (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then
         local union=("${MARKER_EXTS[@]}" "${MID_EXTS[@]}") listed
-        listed=$(scan_files "${paths[0]}" "$DEFAULT_DEPTH" "${union[@]}") || error_exit "No supported files under ${paths[0]}."
+        if ! listed=$(scan_files "${paths[0]}" "$DEFAULT_DEPTH" "${union[@]}"); then
+            warn "No supported files under ${paths[0]}."
+            return "$EX_NOTHING"
+        fi
         mapfile -t paths <<< "$listed"
     fi
 
-    local m_files=() d_files=() f e
+    local m_files=() d_files=() f e missing=0
     for f in "${paths[@]}"; do
-        [[ -f "$f" ]] || { warn "Skipping (not a file): $f"; continue; }
+        [[ -f "$f" ]] || { warn "Not a file: $f"; missing=$((missing+1)); continue; }
         e="$(_ext_lower "$f")"
         if _is_marker_ext "$e"; then m_files+=("$f"); else d_files+=("$f"); fi
     done
 
     # Both backends share one output dir, so suppress their per-run open_path and reveal it once.
-    # A failure in one backend must not skip the other (`|| rc=1`, not errexit),
+    # A failure in one backend must not skip the other (`|| rc=...`, not errexit),
     # and must still show in the exit status.
-    local rc=0
+    #
+    # The worst of the two codes wins, in the order failure > missing input >
+    # nothing to convert: a run where one backend failed and the other found
+    # nothing has failed.
+    local rc=0 one=0
     if (( ${#m_files[@]} > 0 )); then
         info "auto: ${#m_files[@]} file(s) → marker"
-        PROTOCOL_DROID_NO_OPEN=1 marker_convert --output-dir "$out_dir" "${m_files[@]}" || rc=1
+        PROTOCOL_DROID_NO_OPEN=1 marker_convert --output-dir "$out_dir" "${m_files[@]}" || one=$?
+        rc=$(_worse "$rc" "$one"); one=0
     fi
     if (( ${#d_files[@]} > 0 )); then
         info "auto: ${#d_files[@]} file(s) → markitdown"
-        PROTOCOL_DROID_NO_OPEN=1 markitdown_convert --output-dir "$out_dir" "${d_files[@]}" || rc=1
+        PROTOCOL_DROID_NO_OPEN=1 markitdown_convert --output-dir "$out_dir" "${d_files[@]}" || one=$?
+        rc=$(_worse "$rc" "$one")
     fi
-    if (( ${#m_files[@]} == 0 && ${#d_files[@]} == 0 )); then warn "auto: nothing to convert."
-    elif [[ -d "$out_dir" ]]; then open_path "$out_dir"; fi
+    if (( ${#m_files[@]} == 0 && ${#d_files[@]} == 0 )); then
+        warn "auto: nothing to convert."
+        (( missing > 0 )) && return "$EX_NO_INPUT"
+        return "$EX_NOTHING"
+    fi
+    [[ -d "$out_dir" ]] && open_path "$out_dir"
+    (( missing > 0 )) && rc=$(_worse "$rc" "$EX_NO_INPUT")
     return "$rc"
 }
 

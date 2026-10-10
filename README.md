@@ -66,19 +66,31 @@ protocol-droid.sh local convert a.pdf b.docx        # several files (batch, mode
 protocol-droid.sh local status                      # version, torch device, OCR backend, caches
 protocol-droid.sh local gui                         # marker's Streamlit GUI
 protocol-droid.sh local server                      # marker's FastAPI server
-protocol-droid.sh local clear-cache --yes           # delete ~/.cache/datalab (models re-download)
+protocol-droid.sh local clear-cache --yes           # delete surya's model cache (models re-download)
 protocol-droid.sh local uninstall --yes             # remove marker's pipx env (caches kept)
-GOOGLE_API_KEY=… protocol-droid.sh local convert report.pdf -- --force_ocr \
-  --use_llm --llm_service marker.services.gemini.GoogleGeminiService
+protocol-droid.sh local convert report.pdf -- --force_ocr \
+  --use_llm --openai_base_url http://192.168.3.46:1234/v1 --openai_model qwen3-coder
 ```
 
 marker `convert` flags: `--output-format markdown|json|html|chunks`,
 `--output-dir`, `--page-range` (single file), `--workers` (batch). Anything after
-`--` is forwarded to marker (LLM-assist, force OCR, …). `GOOGLE_API_KEY` is
-marker's own env name for its Gemini service — prefer it over putting the key
-on the command line. Setup installs pipx and (on macOS/CPU) the `llama-server`
-OCR backend; models download from the HF Hub on first run (several GB), then
-run offline automatically.
+`--` is forwarded to marker (LLM-assist, force OCR, …) — including the LLM
+options, since the local backend hands marker's flags straight through and has
+no deployment config of its own. Setup installs pipx and (on macOS/CPU) the
+`llama-server` OCR backend; models download on first run (several GB), then run
+offline automatically.
+
+There are **two** model caches, and they are filled from different places:
+
+| Cache | Holds | Moved by |
+| --- | --- | --- |
+| `$HF_HOME/hub` (`~/.cache/huggingface/hub`) | marker's layout/table models, from the Hugging Face Hub | `HF_HOME` |
+| `<platform cache>/datalab/models` (`~/.cache/datalab/models`) | surya's OCR models, from `models.datalab.to` over plain HTTP | `MODEL_CACHE_DIR`, or `XDG_CACHE_HOME` |
+
+The second one is not a Hub cache, which is why `HF_HUB_OFFLINE` has no effect
+on it. `status` prints both resolved paths — including when they do not exist
+yet, because "empty" and "somewhere else" are different answers — and
+`clear-cache --yes` names the directory it is about to delete.
 
 marker's OCR engine (surya) picks its inference backend from
 `SURYA_INFERENCE_BACKEND`: `llamacpp` (default without an NVIDIA GPU — needs
@@ -201,6 +213,15 @@ The image builds that binary itself (multi-stage, from `ggml-org/llama.cpp`
 - On first OCR run surya downloads its own GGUF weights (`datalab-to/surya-ocr-2-gguf`,
   several GB) into `HF_HOME=/models`, and the server holds them resident next to
   marker's models — hence the 12Gi worker memory limit in `k8s/worker.yaml`.
+- Surya's other OCR models come from `models.datalab.to`, not the Hub, into
+  `MODEL_CACHE_DIR=/models/datalab` — on the PVC, so they are downloaded once
+  and shared. Left at its default that directory is inside the pod's own
+  writable layer: every new pod re-downloaded them, and an air-gapped cluster
+  could not convert at all. `HF_HUB_OFFLINE` does not cover this cache.
+  Scale the workers up **after** one conversion has warmed `/models`: the
+  download is "fetch into a temp dir, then move", so several cold replicas
+  racing on a shared RWX volume can see a manifest whose files are still
+  arriving.
 
 `service build` and `service deploy` probe the freshly built image with
 `llama-server --version` and say whether OCR will work; `service status` repeats
@@ -211,9 +232,10 @@ first when it is not already present locally.
 
 #### Which LLM `use_llm` uses
 
-marker's own default is Google Gemini, which needs `GOOGLE_API_KEY` and reaches
+marker's own default is Google Gemini, which needs a Google API key and reaches
 the internet. To point it at a model on your own network instead, configure the
-deployment:
+deployment — in both the API and the worker, since the worker re-validates
+every job it runs:
 
 | Variable | Meaning |
 | --- | --- |
@@ -311,6 +333,74 @@ The `k8s/` manifests deploy into the `marker` namespace (`marker-api` /
 PVCs). The image is not published anywhere — make `marker-service:latest`
 reachable by the cluster yourself (registry push, or `kind load docker-image`).
 
+## Exit codes
+
+Every `convert` path ends on one of these. They exist because a scripted caller
+could not tell a failed batch from an empty one — both left with `0`, as did a
+run whose input file was not there at all.
+
+| Code | Means |
+| ---: | --- |
+| `0` | everything asked for was converted |
+| `1` | at least one conversion failed, or its provenance sidecar could not be written. Also every usage error |
+| `2` | a named input does not exist, or is not a file — nothing was attempted for it |
+| `3` | nothing to convert: the folder held no file the backend handles |
+
+`2` and `3` are deliberately separate: "you named a file that is not there" and
+"this folder has nothing I convert" need different responses from a cron job.
+`--backend auto` reports the **worst** of its two backends in the order
+`1 > 2 > 3`, so an empty second backend cannot hide the first one's failure.
+
+## Provenance
+
+Every conversion writes a JSON sidecar next to its output, recording what was
+converted, by which versions, with which options, and when:
+
+| Layout | Sidecar |
+| --- | --- |
+| marker — one folder per document | `<out>/<stem>/provenance.json` |
+| markitdown — one `.md` per input in a shared folder | `<out>/<name>.md.provenance.json` |
+
+markitdown's is named after its output on purpose: a single `provenance.json`
+in a shared folder would be overwritten by the next document in the same run,
+leaving one sidecar for the whole batch and nothing to say so.
+
+```json
+{
+  "schema": "protocol-droid/provenance/1",
+  "source": { "path": "…/report.pdf", "relative_path": "a/report.pdf",
+              "sha256": "…", "bytes": 182344, "modified": "2026-10-09T11:02:15Z" },
+  "conversion": { "backend": "marker", "started": "…", "finished": "…",
+                  "seconds": 41.8, "output_format": "markdown",
+                  "command": ["marker", "…"], "output_dir": "…",
+                  "outputs": ["report.md", "report_meta.json"] },
+  "versions": { "marker-pdf": "2.0.0", "surya-ocr": "0.22.1", "torch": "2.9.0" },
+  "options": { "use_llm": true, "openai_api_key": "[redacted]" }
+}
+```
+
+The point is **re-conversion**. Without a sidecar, a marker bump is a
+corpus-wide re-run, because nothing on disk says which documents were converted
+by the old version — and the same goes for a changed option or an edited
+source. With one, the question is a diff: this source hash and these versions
+against the sidecar. It is also cheap now and impossible to backfill: a sidecar
+cannot be reconstructed for a document that was already converted.
+
+Two deliberate choices:
+
+- **Credentials are redacted** by key name — `openai_api_key` and anything else
+  matching `key|token|secret|password|credential`. The resolved options carry
+  the deployment's LLM key, and `output/` is the directory meant to be handed to
+  the next pipeline stage.
+- **A sidecar that cannot be written is a failure** (exit `1`), not a warning.
+  The output is still on disk, but a conversion with no provenance is only
+  discovered at the moment somebody needs to decide what to re-convert — which
+  is the one thing the sidecar is for.
+
+`PROTOCOL_DROID_NO_PROVENANCE=1` turns it off. All three execution modes — the
+two local backends and the containerized worker — share one implementation
+(`provenance.py`), so the sidecars are identical whichever ran.
+
 ## Requirements
 
 - **local**: Bash 4.4+ (macOS ships 3.2 — `brew install bash`), Python
@@ -326,17 +416,27 @@ reachable by the cluster yourself (registry push, or `kind load docker-image`).
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v   # the Python suites
+tests/test-exit-codes.sh                   # the bash backends
 ```
 
-**19 tests**, standard library only — no network, no models, no worker, no
-queue. They cover the two places where a value from outside decides what the
-code does with a file.
+Standard library only — no network, no models, no worker, no queue, and no
+converter: the bash suite puts a stub `markitdown` on `PATH`, which writes a
+predictable `.md` and fails on any file whose name contains `boom`.
 
-| File | Tests | What it pins |
+| File | Checks | What it pins |
 | --- | ---: | --- |
 | `tests/test_options.py` | 12 | `--page-range` and `--output-format` validation |
 | `tests/test_output_folder.py` | 7 | which name an output file gets, including collisions and symlinks |
+| `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
+| `tests/test_provenance.py` | 34 | what the sidecar records, what it redacts, and the script interface the bash backends use |
+| `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
+
+`tests/test-exit-codes.sh` is the one that would have caught this round's bugs:
+run against the previous commit it fails 22 of its checks. Every case in it is
+a way of asking the same question — does this run report what actually
+happened. A missing input, an empty folder, a failed conversion and a
+successful one all used to be `0`.
 
 The page-range tests exist because of a specific incident, and one of them is
 named after it: a range the worker accepted and then died on. Validation now
@@ -366,10 +466,14 @@ path outside the root or with no root at all.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
 `main`, every pull request, and on demand:
 
-- `python3 -m compileall` over `api.py`, `tasks.py`, `worker.py` and
-  `enqueue_batch.py` — a syntax check of every module, which is as far as a
-  runner can go without the model weights.
+- `python3 -m compileall` over every module — a syntax check, which is as far as
+  a runner can go without the model weights.
+- `shellcheck -S warning` over `protocol-droid.sh`, `lib/*.sh` and the bash
+  suite. The severity floor is pinned rather than left to the default: SC2002 is
+  off by default in shellcheck 0.11+ and on in older releases, so without `-S`
+  the runner and the workstation disagree about what passes.
 - `python3 -m unittest discover -s tests -v`.
+- `tests/test-exit-codes.sh`.
 
 Neither backend is installed in CI. `marker` needs several GB of model
 weights and `markitdown` needs ffmpeg, and a conversion is only meaningfully

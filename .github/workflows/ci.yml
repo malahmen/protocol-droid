@@ -21,8 +21,26 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Versions
+        run: |
+          bash --version | head -1
+          python3 --version
+          shellcheck --version | sed -n 2p
+
       - name: Syntax of every module
-        run: python3 -m compileall -q api.py tasks.py worker.py enqueue_batch.py
+        # Globbed, not listed: a named list quietly stops covering the next
+        # module somebody adds.
+        run: python3 -m compileall -q ./*.py
+
+      - name: shellcheck
+        # -S warning explicitly: SC2002 is off by default in shellcheck 0.11+
+        # and on in older releases, so the floor has to be pinned or the runner
+        # disagrees with the workstation. -x so the sourced lib/*.sh are read.
+        run: shellcheck -S warning -x protocol-droid.sh lib/*.sh tests/*.sh
 
       - name: tests
         run: python3 -m unittest discover -s tests -v
+
+      - name: bash tests
+        # No converter is installed here; the suite stubs one on PATH.
+        run: tests/test-exit-codes.sh

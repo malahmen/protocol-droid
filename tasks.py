@@ -8,6 +8,12 @@ reused safely across jobs.
 """
 import os
 import re
+import time
+
+# Provenance lives in its own module because the bash backends run it as a
+# script (`python3 provenance.py`), so the local, container and service
+# execution modes all emit the SAME sidecar from the same code.
+from provenance import provenance_record, write_provenance
 
 # Match marker's CLI environment (quiet gRPC/glog, MPS fallback for Macs).
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
@@ -245,7 +251,12 @@ def convert_document(fpath: str, options: dict | None = None, input_root: str | 
     models = get_models()
     # Re-checked in the worker, not only at the API: a job that reaches the
     # queue by another route must not be able to OOM this process either.
-    config_parser = ConfigParser(validate_options(options))
+    # Kept in a local, not read back off the parser afterwards: marker's
+    # ConfigParser stores it as `cli_options`, and reaching for an attribute
+    # name that belongs to another project is how a provenance record quietly
+    # becomes an AttributeError on the next marker bump.
+    validated = validate_options(options)
+    config_parser = ConfigParser(validated)
 
     converter_cls = config_parser.get_converter_cls()
     converter = converter_cls(
@@ -255,8 +266,23 @@ def convert_document(fpath: str, options: dict | None = None, input_root: str | 
         renderer=config_parser.get_renderer(),
         llm_service=config_parser.get_llm_service(),
     )
+    # Taken before the conversion, so `seconds` measures the conversion and not
+    # the sidecar's own hashing.
+    started = time.time()
     rendered = converter(fpath)
     out_dir = (options or {}).get("output_dir") or os.environ.get("OUTPUT_DIR", "/data/output")
     out_folder = output_folder(fpath, out_dir, input_root)
     save_output(rendered, out_folder, config_parser.get_base_filename(fpath))
+
+    # The options RECORDED are the validated ones -- what actually ran, not what
+    # was asked for. validate_options folds the deployment's LLM config in, and
+    # caps page_range.
+    #
+    # An error here is deliberately not swallowed: the sidecar is what makes a
+    # future re-conversion a diff instead of a corpus-wide re-run, and a
+    # conversion with no sidecar is only discovered when that question is
+    # finally asked. The rendered output is already on disk, so a failed job
+    # here loses a retry, not the work.
+    write_provenance(out_folder, provenance_record(
+        fpath, out_folder, validated, started, time.time(), input_root))
     return out_folder

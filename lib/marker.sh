@@ -61,6 +61,26 @@ marker_check_surya() {
     warn "  OCR-dependent conversions will fail. Install it: protocol-droid.sh local setup --backend marker"
 }
 
+# --- surya's own model cache ------------------------------------------------
+#
+# Two caches, not one. marker's layout/table models come from the Hugging Face
+# Hub (HF_HOME); surya's OCR models come from models.datalab.to over plain
+# HTTP, into a directory of its own — which is why HF_HUB_OFFLINE has no effect
+# on them.
+#
+# The path was hardcoded as ~/.cache/datalab here, which is only the default:
+# surya computes it with platformdirs, so XDG_CACHE_HOME moves it, macOS puts
+# it somewhere else entirely, and MODEL_CACHE_DIR overrides it outright (the
+# service image points that at the PVC). `clear-cache --yes` against the wrong
+# path reported "No ~/.cache/datalab to clear" and left several GB where it was.
+marker_cache_root() {
+    case "$(os_family)" in
+        macos) printf '%s' "${HOME}/Library/Caches/datalab" ;;
+        *)     printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/datalab" ;;
+    esac
+}
+marker_model_cache() { printf '%s' "${MODEL_CACHE_DIR:-$(marker_cache_root)/models}"; }
+
 # --- Hugging Face model cache / offline mode --------------------------------
 MARKER_HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}/hub"
 marker_hf_cached() { [[ -d "$MARKER_HF_CACHE" ]] && compgen -G "${MARKER_HF_CACHE}/models--datalab-to--*" >/dev/null 2>&1; }
@@ -136,16 +156,35 @@ marker_convert() {
 
     marker_require; marker_check_surya; marker_apply_hf_offline; mkdir -p "$out_dir"
 
-    local mode in_dir label tmp="" bin rc=0
+    # Named inputs that are not there are reported and dropped BEFORE anything
+    # runs. They used to be staged by link_into_tmp, which skips what it cannot
+    # link: marker then converted an empty directory and exited 0, so a typo in
+    # a cron job looked exactly like a successful run.
+    local present=() missing=0 p
+    for p in "${paths[@]}"; do
+        if [[ -e "$p" ]]; then present+=("$p"); else warn "No such input: $p"; missing=$((missing+1)); fi
+    done
+    if (( ${#present[@]} == 0 )); then
+        warn "Nothing to convert — none of the ${#paths[@]} given path(s) exist."
+        return "$EX_NO_INPUT"
+    fi
+    paths=("${present[@]}")
+
+    local mode in_dir label tmp="" bin rc=0 input_root=""
     if (( ${#paths[@]} == 1 )) && [[ -f "${paths[0]}" ]]; then mode=single
-    elif (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then mode="batch"; in_dir="${paths[0]}"; label="${paths[0]}"
+    elif (( ${#paths[@]} == 1 )) && [[ -d "${paths[0]}" ]]; then mode="batch"; in_dir="${paths[0]}"; label="${paths[0]}"; input_root="${paths[0]}"
     else mode="batch"; tmp=$(link_into_tmp "${paths[@]}") || error_exit "Could not stage the selection for batch."; in_dir="$tmp"; label="${#paths[@]} selected files"; fi
 
+    local started noprov=0 ver; ver="$(marker_version)"
+    started="$(now_epoch)"
     if [[ "$mode" == single ]]; then
         [[ -n "$page_range" ]] && extra+=(--page_range "$page_range")
         bin=$(resolve_bin "$MARKER_PKG" marker_single) || error_exit "marker_single not found — run setup."
         info "Converting ${paths[0]} → ${out_fmt} in ${out_dir}/"
-        if "$bin" "${paths[0]}" --output_format "$out_fmt" --output_dir "$out_dir" "${extra[@]}"; then success "Done → ${out_dir}/"; open_path "$out_dir"
+        if "$bin" "${paths[0]}" --output_format "$out_fmt" --output_dir "$out_dir" "${extra[@]}"; then
+            success "Done → ${out_dir}/"; open_path "$out_dir"
+            marker_provenance "$out_dir" "$input_root" "$ver" "$out_fmt" "$started" \
+                -- "${paths[0]}" || noprov=$((noprov+1))
         else warn "Conversion failed for: ${paths[0]}"; rc=1; fi
     else
         if [[ -n "$workers" ]]; then
@@ -154,12 +193,53 @@ marker_convert() {
         marker_ensure_deps
         bin=$(resolve_bin "$MARKER_PKG" marker) || { [[ -n "$tmp" ]] && rm -rf "$tmp"; error_exit "marker (batch CLI) not found — run setup."; }
         info "Converting ${label} → ${out_fmt} in ${out_dir}/"
-        if "$bin" "$in_dir" --output_format "$out_fmt" --output_dir "$out_dir" "${extra[@]}"; then success "Done → ${out_dir}/"; open_path "$out_dir"
+        if "$bin" "$in_dir" --output_format "$out_fmt" --output_dir "$out_dir" "${extra[@]}"; then
+            success "Done → ${out_dir}/"; open_path "$out_dir"
+            # A folder argument is expanded here rather than handed to
+            # marker_provenance as a directory, so each source file gets its own
+            # sidecar whichever way the batch was assembled.
+            local batch=("${paths[@]}")
+            if [[ "$mode" == batch && -n "$input_root" ]]; then
+                local listed
+                listed=$(scan_files "$input_root" "$DEFAULT_DEPTH" "${MARKER_EXTS[@]}") \
+                    && mapfile -t batch <<< "$listed"
+            fi
+            marker_provenance "$out_dir" "$input_root" "$ver" "$out_fmt" "$started" \
+                -- "${batch[@]}" || noprov=$((noprov+1))
         else warn "Batch conversion reported errors."; rc=1; fi
         if [[ -n "$tmp" ]]; then rm -rf "$tmp"; fi
     fi
+
     # The conversion's own status: cron/CI callers rely on it, and the TUI runs
     # this through engine_foreground, so a non-zero exit no longer closes it.
+    if (( rc != 0 || noprov > 0 )); then return "$EX_FAILED"; fi
+    if (( missing > 0 )); then return "$EX_NO_INPUT"; fi
+    return "$EX_OK"
+}
+
+# marker_provenance <out-dir> <input-root|""> <version> <format> <started>
+#                   -- <source file...>
+#
+# marker names its own output folder: <output_dir>/<stem>/ for each input, one
+# folder per document, which is where the sidecar belongs. That layout is
+# marker's, not ours, so a folder that is not there is reported rather than
+# assumed — the alternative is a sidecar written somewhere nothing reads, which
+# would look exactly like provenance working.
+marker_provenance() {
+    local out_dir="$1" root="$2" ver="$3" fmt="$4" started="$5"; shift 5
+    [[ "${1:-}" == "--" ]] && shift
+    local f base stem folder rc=0 finished; finished="$(now_epoch)"
+    for f in "$@"; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"; stem="${base%.*}"; folder="${out_dir}/${stem}"
+        if [[ ! -d "$folder" ]]; then
+            warn "provenance: no output folder at ${folder} for ${f} — sidecar skipped."
+            rc=1; continue
+        fi
+        provenance_write "$folder" "$f" marker "marker-pdf=${ver}" \
+            "$started" "$finished" "$fmt" "$root" "" -- marker "$f" \
+            --output_format "$fmt" --output_dir "$out_dir" || rc=1
+    done
     return "$rc"
 }
 
@@ -187,18 +267,27 @@ PY
         marker_llama_present && info "llama-server: found ($(command -v llama-server 2>/dev/null || echo "$LLAMA_CPP_BINARY"))" \
             || warn "llama-server: MISSING — OCR will fail. Run setup."
     fi
-    local c; for c in "${HOME}/.cache/datalab" "${HOME}/.cache/huggingface/hub"; do
-        [[ -d "$c" ]] && info "Cache ${c}: $(du -sh "$c" 2>/dev/null | awk '{print $1}')"
+    # The resolved paths, printed whether or not they exist: "that directory is
+    # empty" and "the cache is somewhere else" are different answers, and the
+    # old output could not tell them apart.
+    local c
+    for c in "$(marker_model_cache)" "$MARKER_HF_CACHE"; do
+        if [[ -d "$c" ]]; then info "Cache ${c}: $(du -sh "$c" 2>/dev/null | awk '{print $1}')"
+        else info "Cache ${c}: not present yet"; fi
     done
+    [[ -n "${MODEL_CACHE_DIR:-}" ]] && info "  (surya's cache is set by MODEL_CACHE_DIR)"
     marker_hf_cached && info "HF models: cached (reused indefinitely — no TTL)" || warn "HF models: not cached — first conversion downloads them."
     info "HF mode (next conversion): $(marker_hf_mode)"
     [[ -z "${HF_TOKEN:-}" ]] && info "  Tip: set HF_TOKEN for higher Hub rate limits (no 'unauthenticated' warning) when online." || info "  HF_TOKEN: set"
 }
 
 marker_clear_cache() {
-    [[ "${1:-}" == "--yes" ]] || error_exit "marker clear-cache: pass --yes to confirm (deletes ~/.cache/datalab; models re-download)."
-    [[ -d "${HOME}/.cache/datalab" ]] || { info "No ~/.cache/datalab to clear."; return 0; }
-    rm -rf "${HOME}/.cache/datalab" && success "Cache cleared (~/.cache/datalab)."
+    local dir; dir="$(marker_model_cache)"
+    [[ "${1:-}" == "--yes" ]] || error_exit "marker clear-cache: pass --yes to confirm (deletes ${dir}; models re-download)."
+    # Named in both messages: with MODEL_CACHE_DIR set this can be a shared
+    # volume, and "cache cleared" without a path is not enough to tell whose.
+    [[ -d "$dir" ]] || { info "Nothing to clear at ${dir}."; return 0; }
+    rm -rf "$dir" && success "Cache cleared (${dir})."
 }
 
 marker_gui() {
