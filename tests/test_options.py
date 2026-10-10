@@ -80,9 +80,12 @@ class OutputFormat(unittest.TestCase):
 
 class Options(unittest.TestCase):
     def test_normalises_and_leaves_the_rest_alone(self):
+        # `use_llm` used to be the unrelated key here. It is validated now (see
+        # test_llm_config.py: it meant an unconfigured Google Gemini call), so
+        # the passthrough is asserted with a key that really is unrelated.
         got = tasks.validate_options(
-            {"output_format": "json", "page_range": " 1 , 4-6 ", "use_llm": True})
-        self.assertEqual(got, {"output_format": "json", "page_range": "1,4-6", "use_llm": True})
+            {"output_format": "json", "page_range": " 1 , 4-6 ", "force_ocr": True})
+        self.assertEqual(got, {"output_format": "json", "page_range": "1,4-6", "force_ocr": True})
 
     def test_does_not_mutate_the_caller_s_dict(self):
         src = {"page_range": " 1 "}

@@ -1,0 +1,31 @@
+# The LLM that `use_llm` talks to.
+#
+# Deployment configuration, deliberately: a conversion request may ask for an
+# LLM but never name one. marker's own `llm_service` option is a dotted class
+# path that it imports, and a caller who could set the base URL could point a
+# worker at any host it can reach — so both come from here.
+#
+# Leave LLM_SERVICE empty and `use_llm` is refused with a message naming this
+# file. That is better than the previous behaviour, where marker defaulted to
+# Google Gemini and the job failed on a missing internet API key.
+#
+#   ollama -> LLM_BASE_URL defaults to http://localhost:11434
+#   openai -> OpenAI-COMPATIBLE: llama.cpp's server, vLLM, LM Studio, LocalAI.
+#             LLM_BASE_URL defaults to http://localhost:8080/v1
+#
+# Note what "localhost" means in a pod: the pod itself. The models run on
+# corelia (32 cores, 125 GiB — four times this cluster node), so from here the
+# endpoint is that host, not loopback. A worker running under podman ON corelia
+# is the case where loopback is right, and is the faster one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marker-llm
+  namespace: marker
+data:
+  LLM_SERVICE: ""
+  # LLM_SERVICE: "openai"
+  # LLM_BASE_URL: "http://192.168.3.46:8080/v1"
+  # LLM_MODEL: "qwen2.5-vl-7b"
+  LLM_BASE_URL: ""
+  LLM_MODEL: ""

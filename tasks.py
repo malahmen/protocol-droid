@@ -80,6 +80,89 @@ def validate_page_range(spec: str) -> str:
     return ",".join(parts)
 
 
+# --- the LLM marker talks to, when use_llm is set ---------------------------
+#
+# Without this, `use_llm` meant Google Gemini: marker's ConfigParser falls back
+# to "marker.services.gemini.GoogleGeminiService" when no llm_service is given,
+# so a job on this LAN reached for an internet API and a key nobody had set.
+# The point of the option here is to use OUR model.
+#
+# Two deliberate restrictions.
+#
+# The service is chosen from a FIXED MAP, never from a caller-supplied string.
+# marker's `llm_service` option is a dotted class path that it imports, so
+# passing one through from a request would be an arbitrary-class import.
+#
+# And it is DEPLOYMENT configuration — environment, read by the worker — not a
+# per-request field. A request may only say use_llm true or false. A caller who
+# could name the base URL could point the worker at any host it can reach,
+# which is a request-forgery primitive, and the endpoint is a property of where
+# the service runs rather than of one document.
+#
+# Only the two services that can address a LAN endpoint are wired up, with
+# their option names taken from marker 2.0.0 itself rather than guessed:
+#   ollama -> ollama_base_url (default http://localhost:11434), ollama_model
+#   openai -> openai_base_url (default https://api.openai.com/v1), openai_model,
+#             openai_api_key  — "openai" here means OpenAI-COMPATIBLE, which is
+#             what llama.cpp's server, vLLM, LM Studio and LocalAI all speak.
+# The others marker ships (gemini, claude, azure_openai, vertex, openrouter)
+# are reachable only by naming them, and are left out until their option names
+# are verified the same way.
+LLM_SERVICES = {
+    "ollama": "marker.services.ollama.OllamaService",
+    "openai": "marker.services.openai.OpenAIService",
+}
+LLM_DEFAULT_BASE_URL = {
+    "ollama": "http://localhost:11434",
+    "openai": "http://localhost:8080/v1",
+}
+
+
+def llm_config() -> dict:
+    """marker options for the configured LLM, or {} when none is configured.
+
+    Raises InvalidOption when LLM_SERVICE names something unsupported, so a
+    typo fails the job with a message instead of quietly falling back to an
+    internet API.
+    """
+    name = (os.environ.get("LLM_SERVICE") or "").strip().lower()
+    if not name:
+        return {}
+    if name not in LLM_SERVICES:
+        raise InvalidOption(
+            f"LLM_SERVICE={name!r} is not supported; use one of: "
+            + ", ".join(sorted(LLM_SERVICES))
+        )
+    base_url = (os.environ.get("LLM_BASE_URL") or LLM_DEFAULT_BASE_URL[name]).rstrip("/")
+    model = (os.environ.get("LLM_MODEL") or "").strip()
+    cfg = {"llm_service": LLM_SERVICES[name], f"{name}_base_url": base_url}
+    if model:
+        cfg[f"{name}_model"] = model
+    if name == "openai":
+        # An OpenAI-compatible server usually ignores the key but the client
+        # still requires one to be present.
+        cfg["openai_api_key"] = os.environ.get("LLM_API_KEY") or "not-needed"
+    return cfg
+
+
+def llm_config_or_die() -> dict:
+    """llm_config(), but an unconfigured LLM is an error rather than {}.
+
+    Separate from llm_config so the API can reject a use_llm request up front
+    while the worker keeps its own check — a job that reaches the queue by
+    another route must not bypass it either.
+    """
+    cfg = llm_config()
+    if not cfg:
+        raise InvalidOption(
+            "use_llm was requested but no LLM is configured: set LLM_SERVICE "
+            "(" + ", ".join(sorted(LLM_SERVICES)) + ") and LLM_BASE_URL. "
+            "Without it marker would reach for Google Gemini and an API key "
+            "this deployment does not have."
+        )
+    return cfg
+
+
 def validate_options(options: dict | None) -> dict:
     """A copy of `options` with the two caller-supplied knobs checked."""
     opts = dict(options or {})
@@ -87,6 +170,10 @@ def validate_options(options: dict | None) -> dict:
         validate_output_format(opts["output_format"])
     if opts.get("page_range"):
         opts["page_range"] = validate_page_range(opts["page_range"])
+    if opts.get("use_llm"):
+        # Deployment config wins: a request cannot name the service, the model
+        # or the endpoint.
+        opts.update(llm_config_or_die())
     return opts
 
 

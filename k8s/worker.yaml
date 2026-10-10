@@ -47,6 +47,12 @@ spec:
                 secretKeyRef: { name: marker-redis, key: password }
             - { name: OUTPUT_DIR, value: "/data/output" }
             - { name: HF_HOME, value: "/models" }
+            # The LLM use_llm talks to; see configmap marker-llm. Deployment
+            # configuration, not a request field. envFrom so an absent
+            # ConfigMap key simply leaves it unset (and use_llm is then
+            # refused with a message instead of calling Google Gemini).
+          envFrom:
+            - configMapRef: { name: marker-llm, optional: true }
           resources:
             # The OCR path spawns llama-server inside this container (surya's
             # llamacpp backend), so the surya GGUF + mmproj stay resident on top
