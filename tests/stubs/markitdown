@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# A stand-in for the real markitdown CLI.
+#
+# It writes a predictable .md and nothing else, so the suite can assert on
+# protocol-droid's own behaviour — exit codes, output naming, provenance —
+# without installing a converter. A source file whose name contains "boom"
+# fails, which is how the failure paths are reached.
+set -uo pipefail
+src=""; out=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        -*) shift ;;
+        *) [[ -z "$src" ]] && src="$1"; shift ;;
+    esac
+done
+case "$src" in *boom*) echo "stub: refusing $src" >&2; exit 1 ;; esac
+printf '# converted %s\n' "$(basename "$src")" > "$out"

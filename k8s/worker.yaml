@@ -46,7 +46,17 @@ spec:
               valueFrom:
                 secretKeyRef: { name: marker-redis, key: password }
             - { name: OUTPUT_DIR, value: "/data/output" }
+            # Both caches on the PVC. They are not duplicates: HF_HOME is the
+            # Hugging Face Hub cache, MODEL_CACHE_DIR is surya's own, filled
+            # over plain HTTP from models.datalab.to — which is why
+            # HF_HUB_OFFLINE never stopped it re-downloading. Left at its
+            # default it lands in the pod's writable layer, so every new pod
+            # fetched the OCR models again and an air-gapped cluster could not
+            # convert at all. Repeated here although the image already sets
+            # them, because this is the file somebody reads when the cache is
+            # in the wrong place.
             - { name: HF_HOME, value: "/models" }
+            - { name: MODEL_CACHE_DIR, value: "/models/datalab" }
             # The LLM use_llm talks to; see configmap marker-llm. Deployment
             # configuration, not a request field. envFrom so an absent
             # ConfigMap key simply leaves it unset (and use_llm is then

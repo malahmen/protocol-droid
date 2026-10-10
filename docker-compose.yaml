@@ -76,7 +76,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       OUTPUT_DIR: /data/output
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}   # only needed for use_llm (marker's Gemini service)
+      # The same four as the api service, and for the same reason: the worker
+      # re-validates every job, so a use_llm job the API accepted would be
+      # refused here if only the API were configured. (This used to be
+      # GOOGLE_API_KEY, left over from when use_llm meant Gemini — a key for a
+      # service the worker can no longer be pointed at.)
+      LLM_SERVICE: ${LLM_SERVICE:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     volumes:
       - "${MARKER_INPUT:-./input}:/data/input"
       - "${MARKER_OUTPUT:-./output}:/data/output"

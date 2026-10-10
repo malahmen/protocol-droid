@@ -14,6 +14,31 @@ success()    { printf '%s[ok]%s    %s\n' "$C_G" "$C_N" "$*" >&2; }
 warn()       { printf '%s[warn]%s  %s\n' "$C_Y" "$C_N" "$*" >&2; }
 error_exit() { printf '%s[error]%s %s\n' "$C_R" "$C_N" "$*" >&2; exit 1; }
 
+# --- exit codes --------------------------------------------------------------
+#
+# A scripted caller could not tell a failed batch from an empty one: both left
+# with 0. Every `convert` path now ends on one of these, and `auto` reports the
+# worst of the two backends it ran.
+#
+#   0  everything asked for was converted
+#   1  at least one conversion failed (also every usage error, via error_exit)
+#   2  a named input does not exist, or is not a file -- nothing was attempted
+#      for it, which is a caller mistake rather than a conversion failure
+#   3  nothing to convert: the folder held no file either backend handles
+#
+# 2 and 3 are deliberately distinct. "You named a file that is not there" and
+# "this directory has nothing I convert" need different responses from a cron
+# job, and a tool that answers both with silence and 0 teaches you to trust a
+# backup that is not happening.
+# shellcheck disable=SC2034  # consumed by lib/<backend>.sh and protocol-droid.sh
+EX_OK=0
+# shellcheck disable=SC2034
+EX_FAILED=1
+# shellcheck disable=SC2034
+EX_NO_INPUT=2
+# shellcheck disable=SC2034
+EX_NOTHING=3
+
 # shellcheck disable=SC2034  # consumed by lib/<backend>.sh and protocol-droid.sh
 DEFAULT_OUTPUT_DIR="./converted"
 # shellcheck disable=SC2034
@@ -134,9 +159,77 @@ link_into_tmp() {
     printf '%s' "$tmp"
 }
 
-# Unique output path <dir>/<stem>.<ext>, disambiguating collisions with _N.
-unique_out() {
-    local dir="$1" stem="$2" ext="$3" out="${1}/${2}.${3}"
-    if [[ -e "$out" ]]; then local i=2; while [[ -e "${dir}/${stem}_${i}.${ext}" ]]; do i=$((i+1)); done; out="${dir}/${stem}_${i}.${ext}"; fi
+# Output path <dir>/<stem>.<ext>.
+#
+# OVERWRITES by default. It used to disambiguate a collision with _N, which
+# meant a second run of the same corpus produced doc.md AND doc_2.md: the
+# downstream ingestion pipeline then indexed the same document two or three
+# times over, and no step in between could tell which copy was current. A
+# re-conversion replacing its own earlier output is the behaviour that matches
+# what the tool is for.
+#
+# `clobber=false` (markitdown convert --no-clobber) restores the _N behaviour
+# for the case where the old output is the thing you want to keep.
+out_path() {
+    local dir="$1" stem="$2" ext="$3" clobber="${4:-true}" out="${1}/${2}.${3}"
+    if [[ "$clobber" != true && -e "$out" ]]; then
+        local i=2; while [[ -e "${dir}/${stem}_${i}.${ext}" ]]; do i=$((i+1)); done
+        out="${dir}/${stem}_${i}.${ext}"
+    fi
     printf '%s' "$out"
+}
+
+# --- provenance --------------------------------------------------------------
+#
+# One sidecar format for every execution mode: this calls the same
+# provenance.py the containerized worker imports, rather than writing a second
+# JSON builder in bash that would drift from it.
+#
+# PROTOCOL_DROID_NO_PROVENANCE=1 turns it off.
+now_epoch() { printf '%s' "${EPOCHSECONDS:-$(date +%s)}"; }
+
+# provenance_write <out-folder> <source> <backend> <pkg=ver> <started> <finished>
+#                  <output-format> <input-root|""> <sidecar-name> <output-file...>
+#                  -- <argv that ran...>
+#
+# <sidecar-name> matters where the output folder is shared between documents:
+# markitdown writes one .md per input into one folder, so a single
+# provenance.json there would be overwritten by the next document in the same
+# run, leaving one sidecar for the batch and no error to show it. It passes
+# <stem>.md.provenance.json, and names its own output file so the sidecar does
+# not claim every other .md in the folder.
+#
+# Returns non-zero when the sidecar was not written, and the callers count that
+# as a failed file. A conversion whose provenance is missing is not a
+# conversion you can make a re-run decision about later, and the hole is
+# invisible until the moment that decision is needed -- which is the whole
+# reason the sidecar exists.
+provenance_write() {
+    [[ "${PROTOCOL_DROID_NO_PROVENANCE:-}" == 1 ]] && return 0
+    local out="$1" src="$2" backend="$3" ver="$4" started="$5" finished="$6"
+    local fmt="$7" root="$8" name="$9"; shift 9
+    local outputs=()
+    while (( $# )) && [[ "$1" != "--" ]]; do outputs+=("$1"); shift; done
+    [[ "${1:-}" == "--" ]] && shift
+    local script="${HERE:-}/provenance.py"
+    if [[ ! -f "$script" ]]; then
+        warn "provenance: ${script} is missing — no sidecar written for ${src}."
+        return 1
+    fi
+    if ! command -v python3 &>/dev/null; then
+        warn "provenance: python3 not found — no sidecar written for ${src}."
+        return 1
+    fi
+    local args=(--source "$src" --output-dir "$out" --backend "$backend"
+                --started "$started" --finished "$finished" --version "$ver")
+    [[ -n "$fmt" ]]  && args+=(--output-format "$fmt")
+    [[ -n "$root" ]] && args+=(--input-root "$root")
+    [[ -n "$name" ]] && args+=(--name "$name")
+    local o; for o in "${outputs[@]}"; do args+=(--output "$o"); done
+    # --command is argparse.REMAINDER, so it has to come last.
+    (( $# )) && args+=(--command "$@")
+    python3 "$script" "${args[@]}" >/dev/null || {
+        warn "provenance: could not write a sidecar in ${out}."
+        return 1
+    }
 }
