@@ -51,6 +51,13 @@ services:
       OUTPUT_DIR: /data/output
       RESULT_TTL: ${RESULT_TTL:-86400}
       PROTOCOL_DROID_TOKEN: ${PROTOCOL_DROID_TOKEN:-}
+      # The LLM `use_llm` talks to. Deployment configuration on purpose: a
+      # request may only ask for an LLM, never name one. Unset = use_llm is
+      # refused with a message, rather than reaching for Google Gemini.
+      LLM_SERVICE: ${LLM_SERVICE:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     ports:
       - "${API_BIND:-127.0.0.1}:8000:8000"
     volumes:

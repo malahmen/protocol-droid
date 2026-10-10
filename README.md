@@ -209,8 +209,40 @@ binary is reported, not fatal — text-layer PDFs still convert. `service deploy
 --target k8s` cannot build as part of `kubectl apply`, so it builds the image
 first when it is not already present locally.
 
-`use_llm` needs `GOOGLE_API_KEY` (marker's env name for its Gemini service) —
-set it in `.env`, compose passes it to the workers.
+#### Which LLM `use_llm` uses
+
+marker's own default is Google Gemini, which needs `GOOGLE_API_KEY` and reaches
+the internet. To point it at a model on your own network instead, configure the
+deployment:
+
+| Variable | Meaning |
+| --- | --- |
+| `LLM_SERVICE` | `ollama`, or `openai` for anything **OpenAI-compatible** — llama.cpp's server, vLLM, LM Studio, LocalAI |
+| `LLM_BASE_URL` | its endpoint. Defaults are loopback (`:11434`, `:8080/v1`), not a cloud API |
+| `LLM_MODEL` | optional; marker's own default otherwise |
+| `LLM_API_KEY` | optional — an OpenAI-compatible server usually ignores it, but the client requires one to be present |
+
+Set them in `.env` for Compose, or in `k8s/llm-configmap.yaml` for Kubernetes.
+With `LLM_SERVICE` unset, `use_llm` is **refused** — a `400` from the API, and
+the same check again in the worker for a job that arrived another way — rather
+than accepted and then failed on a missing Gemini key.
+
+Two things are deliberately **not** request fields:
+
+- **the service.** marker's `llm_service` option is a dotted class path that it
+  imports, so accepting one from a request would be an arbitrary-class import.
+  A short name is mapped to a fixed path instead.
+- **the endpoint.** A caller who could set the base URL could point a worker at
+  any host it can reach. It is a property of where the service runs, not of one
+  document.
+
+A request may only say `use_llm: true`.
+
+Note what `localhost` means to a worker in a pod: the pod. If the models run on
+another host, name that host. A worker running under podman *on* the machine
+with the models is the case where loopback is right — and on this network that
+machine has four times the cores of the cluster node, so it is also the faster
+one.
 
 ```sh
 # Docker Compose

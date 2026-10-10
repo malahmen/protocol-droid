@@ -18,6 +18,10 @@ Env:
   PAGE_RANGE_MAX_INDEX  default 100000 — highest page number a page_range may name
   PROTOCOL_DROID_TOKEN  when set, every request needs `Authorization: Bearer <token>`
                         (unset = open API: keep it bound to localhost, see docker-compose.yaml)
+  LLM_SERVICE           ollama | openai (OpenAI-compatible) — the LLM `use_llm`
+                        talks to. Unset = `use_llm` is refused with a 400.
+  LLM_BASE_URL          its endpoint (defaults are loopback, not a cloud API)
+  LLM_MODEL, LLM_API_KEY
 """
 import hmac
 import os
@@ -94,6 +98,12 @@ def enqueue(body: JobIn):
     try:
         output_format = tasks.validate_output_format(body.output_format)
         page_range = tasks.validate_page_range(body.page_range) if body.page_range else None
+        # Same reasoning as the two above: a deployment with no LLM configured
+        # should refuse the REQUEST, not accept it and fail the job minutes
+        # later in a worker log. The endpoint itself is never taken from the
+        # body — it is deployment configuration (tasks.llm_config).
+        if body.use_llm:
+            tasks.llm_config_or_die()
     except tasks.InvalidOption as exc:
         raise HTTPException(400, str(exc))
 
