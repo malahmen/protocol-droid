@@ -333,6 +333,26 @@ The `k8s/` manifests deploy into the `marker` namespace (`marker-api` /
 PVCs). The image is not published anywhere — make `marker-service:latest`
 reachable by the cluster yourself (registry push, or `kind load docker-image`).
 
+**Storage on Kubernetes.** Two settings, read by `service deploy --target k8s`
+from the environment or `.env` (the environment wins):
+
+| Setting | Applies to | Default |
+| --- | --- | --- |
+| `K8S_STORAGE_CLASS` | all three claims | empty: the cluster's default class |
+| `K8S_ACCESS_MODE` | `marker-input`, `marker-output` | `ReadWriteOnce` |
+
+The model cache (`marker-models`) is always `ReadWriteOnce`. `ReadWriteOnce`
+means pods on **one node**, not one pod, so on a single-node cluster (k3s, kind,
+anything on `local-path`) every replica shares it. That is also all `local-path`
+can provision: a `ReadWriteMany` request there never binds, and the deployment
+sits `Pending`. When the cluster gains a node, add an RWX-capable class (an NFS
+export, CephFS, ...) and set `K8S_STORAGE_CLASS=<it>` plus
+`K8S_ACCESS_MODE=ReadWriteMany`. Give the model cache that class too, or accept
+one cache, and one model download, per node. `k8s/pvc.yaml` on its own is a
+valid manifest with the defaults; `kubectl apply -f` it by hand and it binds on
+a single node. Claims are immutable: changing an existing claim's class or mode
+means deleting it first (a `Pending` one holds no data).
+
 ## Exit codes
 
 Every `convert` path ends on one of these. They exist because a scripted caller

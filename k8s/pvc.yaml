@@ -1,19 +1,34 @@
-# Shared storage. ReadWriteMany lets multiple worker replicas (possibly on
-# different nodes) share the model cache + input + output. RWX needs a capable
-# StorageClass (NFS, CephFS, EFS, Filestore, …). If you only have RWO, either
-# run the workers on a single node, give each its own cache, or bake models
-# into the image. Set `storageClassName` to match your cluster.
+# Storage for the k8s target. Two settings, read by `protocol-droid.sh service
+# deploy --target k8s` from the environment or .env (applying this file by hand
+# also works: you get the defaults):
+#
+#   K8S_STORAGE_CLASS   the StorageClass for all three claims.
+#                       Empty (default): the cluster's default class.
+#   K8S_ACCESS_MODE     input and output: ReadWriteOnce (default) or
+#                       ReadWriteMany.
+#
+# ReadWriteOnce means "pods on ONE node", not "one pod": on a single-node
+# cluster (meksha, kind) every replica shares an RWO claim, and RWO is all that
+# local-path / most local provisioners offer - an RWX request there never binds.
+# Set ReadWriteMany together with an RWX-capable class (NFS, CephFS, ...) once
+# the cluster has more than one node.
+#
+# The model cache is always ReadWriteOnce: with more nodes, give it an RWX
+# class too, or accept one cache (one model download) per node.
+#
+# Claims are immutable once created: to change the access mode or class of an
+# existing claim, delete it first (a Pending one holds no data).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: marker-models
   namespace: marker
 spec:
-  accessModes: ["ReadWriteMany"]
+  accessModes: ["ReadWriteOnce"]
+  # storageClassName: (K8S_STORAGE_CLASS)
   resources:
     requests:
       storage: 20Gi
-  # storageClassName: <your-rwx-class>
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -21,11 +36,11 @@ metadata:
   name: marker-input
   namespace: marker
 spec:
-  accessModes: ["ReadWriteMany"]
+  accessModes: ["ReadWriteOnce"]   # (K8S_ACCESS_MODE)
+  # storageClassName: (K8S_STORAGE_CLASS)
   resources:
     requests:
       storage: 10Gi
-  # storageClassName: <your-rwx-class>
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -33,8 +48,8 @@ metadata:
   name: marker-output
   namespace: marker
 spec:
-  accessModes: ["ReadWriteMany"]
+  accessModes: ["ReadWriteOnce"]   # (K8S_ACCESS_MODE)
+  # storageClassName: (K8S_STORAGE_CLASS)
   resources:
     requests:
       storage: 10Gi
-  # storageClassName: <your-rwx-class>

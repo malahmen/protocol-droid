@@ -43,4 +43,6 @@ jobs:
 
       - name: bash tests
         # No converter is installed here; the suite stubs one on PATH.
-        run: tests/test-exit-codes.sh
+        run: |
+          tests/test-exit-codes.sh
+          tests/test-k8s-storage.sh
