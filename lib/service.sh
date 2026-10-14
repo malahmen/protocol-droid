@@ -60,7 +60,32 @@ svc_env_load() {
     while IFS= read -r line || [[ -n "$line" ]]; do case "$line" in
         MARKER_INPUT=*)  export MARKER_INPUT="${line#MARKER_INPUT=}" ;;
         MARKER_OUTPUT=*) export MARKER_OUTPUT="${line#MARKER_OUTPUT=}" ;;
+        # k8s storage settings; the environment wins over .env.
+        K8S_STORAGE_CLASS=*) [[ -n "${K8S_STORAGE_CLASS+x}" ]] || export K8S_STORAGE_CLASS="${line#K8S_STORAGE_CLASS=}" ;;
+        K8S_ACCESS_MODE=*)   [[ -n "${K8S_ACCESS_MODE+x}" ]]   || export K8S_ACCESS_MODE="${line#K8S_ACCESS_MODE=}" ;;
     esac; done < "$ENV_FILE"
+}
+
+# svc_render_pvcs — k8s/pvc.yaml with the storage settings applied, on stdout.
+# The file itself stays a valid manifest (RWO, the cluster's default class), so
+# a hand-run `kubectl apply -f k8s/pvc.yaml` keeps working; the two settings
+# fill in the marked lines:
+#   K8S_STORAGE_CLASS  every "# storageClassName: (K8S_STORAGE_CLASS)" line
+#   K8S_ACCESS_MODE    every "accessModes: [...]   # (K8S_ACCESS_MODE)" line
+svc_render_pvcs() {
+    local class="${K8S_STORAGE_CLASS:-}" mode="${K8S_ACCESS_MODE:-ReadWriteOnce}"
+    case "$mode" in
+        ReadWriteOnce|ReadWriteMany) ;;
+        *) error_exit "K8S_ACCESS_MODE must be ReadWriteOnce or ReadWriteMany (got '${mode}')." ;;
+    esac
+    if [[ -n "$class" && ! "$class" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+        error_exit "K8S_STORAGE_CLASS '${class}' is not a valid StorageClass name."
+    fi
+    local sed_args=(-e "s|accessModes: \\[\"ReadWriteOnce\"\\]   # (K8S_ACCESS_MODE)|accessModes: [\"${mode}\"]|")
+    if [[ -n "$class" ]]; then
+        sed_args+=(-e "s|^  # storageClassName: (K8S_STORAGE_CLASS)\$|  storageClassName: ${class}|")
+    fi
+    sed "${sed_args[@]}" "${K8S}/pvc.yaml"
 }
 _compose() { svc_env_load; docker compose -f "$COMPOSE" "$@"; }
 
@@ -118,7 +143,10 @@ svc_deploy() {
         info "Applying manifests to namespace '${K8S_NS}'..."
         kubectl apply -f "${K8S}/namespace.yaml" || error_exit "apply failed."
         svc_redis_secret_k8s
-        kubectl apply -f "${K8S}/pvc.yaml" -f "${K8S}/redis.yaml" -f "${K8S}/networkpolicy.yaml" -f "${K8S}/api.yaml" -f "${K8S}/worker.yaml" \
+        svc_env_load
+        info "Storage: class ${K8S_STORAGE_CLASS:-<cluster default>}, input/output ${K8S_ACCESS_MODE:-ReadWriteOnce}, model cache ReadWriteOnce."
+        svc_render_pvcs | kubectl apply -f - || error_exit "kubectl apply (volume claims) failed. An existing claim cannot change class or access mode: delete it first (a Pending one holds no data)."
+        kubectl apply -f "${K8S}/redis.yaml" -f "${K8S}/networkpolicy.yaml" -f "${K8S}/api.yaml" -f "${K8S}/worker.yaml" \
             && success "Applied. Make image '${IMAGE}' available to the cluster (registry push or 'kind load')." || error_exit "kubectl apply failed."
         info "Reach the API: kubectl -n ${K8S_NS} port-forward svc/marker-api 8000:8000"
     fi
