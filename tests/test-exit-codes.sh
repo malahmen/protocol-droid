@@ -59,7 +59,7 @@ check "the backend is recorded" field_is "$out/a.md.provenance.json" conversion.
 check "the source path"         field_is "$out/a.md.provenance.json" source.path "$src/a.docx"
 check "relative to the folder"  field_is "$out/a.md.provenance.json" source.relative_path a.docx
 check "the source hash"         field_is "$out/a.md.provenance.json" source.sha256 "$(sha256sum "$src/a.docx" | cut -d' ' -f1)"
-check "the source size"         field_is "$out/a.md.provenance.json" source.bytes "$(stat -c %s "$src/a.docx")"
+check "the source size"         field_is "$out/a.md.provenance.json" source.bytes "$(wc -c < "$src/a.docx" | tr -d ' ')"   # wc, not GNU-only stat -c
 # The bug a shared provenance.json would have hidden: each sidecar must claim
 # only its own output, not every .md in the folder.
 check "it claims only its own output" field_is "$out/a.md.provenance.json" conversion.outputs '["a.md"]'
@@ -78,7 +78,7 @@ run local convert --backend markitdown --output-dir "$out" "$src"
 check "exits 0"              test "$RC" -eq 0
 check "no a_2.md"            test ! -e "$out/a_2.md"
 check "no b_2.md"            test ! -e "$out/b_2.md"
-check "two outputs, two sidecars" bash -c 'test "$(find "$1" -maxdepth 1 -name "*.md" | wc -l)" = 2' _ "$out"
+check "two outputs, two sidecars" bash -c 'test "$(find "$1" -maxdepth 1 -name "*.md" | wc -l | tr -d " ")" = 2' _ "$out"   # BSD wc pads the count
 
 echo
 echo "== --no-clobber keeps the old output =="
