@@ -38,10 +38,16 @@ consistent, scriptable interface.
 
 ## Install / usage
 
-`protocol-droid.sh` is a dependency-light Bash script (an entry script plus
-`lib/` backend adapters) — usable directly from a shell, a Makefile, CI, or cron.
-scomp-link ships a gum TUI that builds these flags for you, but nothing here
-requires it.
+`protocol-droid.sh` is the entry point — usable directly from a shell, a
+Makefile, CI, or cron. The engine behind it is Python (`pdroid/`, standard
+library only, any `python3` 3.9+); the script is a launcher that keeps the
+name and calling convention everything already uses, and `protocol_droid.py`
+runs the same engine directly. scomp-link ships a gum TUI that builds these
+flags for you, but nothing here requires it.
+
+The bash engine this replaced is release
+[v1.0.0](https://github.com/malahmen/protocol-droid/releases/tag/v1.0.0): the
+same commands, flags, messages and exit codes.
 
 ```sh
 protocol-droid.sh local   <command> [--backend marker|markitdown|auto] [flags]
@@ -457,8 +463,10 @@ two local backends and the containerized worker — share one implementation
 
 ## Requirements
 
-- **local**: Bash 4.4+ (macOS ships 3.2 — `brew install bash`), Python
-  3.10–3.13 (3.14 refused, 3.12 preferred), pipx (installed by `setup`). The
+- **the engine**: `python3` 3.9+, any version — it runs on the host's own
+  interpreter and never imports marker or markitdown.
+- **local**: for the converters' own environments, a Python 3.10–3.13 (3.14
+  refused, 3.12 preferred) and pipx (installed by `setup`). The
   `marker` backend also wants plenty of disk/RAM for its models and, on
   CPU, `llama-server` for OCR; the `markitdown` backend additionally wants
   `ffmpeg` for mp3 transcription.
@@ -471,11 +479,13 @@ two local backends and the containerized worker — share one implementation
 
 ```sh
 python3 -m unittest discover -s tests -v   # the Python suites
-tests/test-exit-codes.sh                   # the bash backends
+tests/test-exit-codes.sh                   # end to end through protocol-droid.sh
+tests/test-container.sh
+tests/test-k8s-storage.sh
 ```
 
 Standard library only — no network, no models, no worker, no queue, and no
-converter: the bash suite puts a stub `markitdown` on `PATH`, which writes a
+converter: the exit-code suite puts a stub `markitdown` on `PATH`, which writes a
 predictable `.md` and fails on any file whose name contains `boom`.
 
 | File | Checks | What it pins |
@@ -483,10 +493,12 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_options.py` | 12 | `--page-range` and `--output-format` validation |
 | `tests/test_output_folder.py` | 7 | which name an output file gets, including collisions and symlinks |
 | `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
-| `tests/test_provenance.py` | 34 | what the sidecar records, what it redacts, and the script interface the bash backends use |
+| `tests/test_provenance.py` | 34 | what the sidecar records, what it redacts, and its script interface |
 | `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
 | `tests/test_cli.py` | 11 | the container entry: `bench`'s arithmetic (load timed apart, the resident saving), `convert`'s batch and exit codes - marker replaced, never loaded |
 | `tests/test-container.sh` | 23 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host |
+| `tests/test-k8s-storage.sh` | 22 | the volume claims `service deploy --target k8s` renders: access mode and storage class from the environment or `.env` |
+| `tests/test_engine.py` | 9 | the folder scanner, output naming and exit-code severity, pinned to v1.0.0's bash answers |
 
 `tests/test-exit-codes.sh` is the one that would have caught this round's bugs:
 run against the previous commit it fails 22 of its checks. Every case in it is
@@ -524,12 +536,12 @@ path outside the root or with no root at all.
 
 - `python3 -m compileall` over every module — a syntax check, which is as far as
   a runner can go without the model weights.
-- `shellcheck -S warning` over `protocol-droid.sh`, `lib/*.sh` and the bash
-  suite. The severity floor is pinned rather than left to the default: SC2002 is
+- `shellcheck -S warning` over the `protocol-droid.sh` launcher and the shell
+  suites. The severity floor is pinned rather than left to the default: SC2002 is
   off by default in shellcheck 0.11+ and on in older releases, so without `-S`
   the runner and the workstation disagree about what passes.
 - `python3 -m unittest discover -s tests -v`.
-- `tests/test-exit-codes.sh`.
+- `tests/test-exit-codes.sh`, `tests/test-k8s-storage.sh`, `tests/test-container.sh`.
 
 Neither backend is installed in CI. `marker` needs several GB of model
 weights and `markitdown` needs ffmpeg, and a conversion is only meaningfully

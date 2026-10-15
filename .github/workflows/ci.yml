@@ -30,13 +30,13 @@ jobs:
       - name: Syntax of every module
         # Globbed, not listed: a named list quietly stops covering the next
         # module somebody adds.
-        run: python3 -m compileall -q ./*.py wip
+        run: python3 -m compileall -q ./*.py pdroid
 
       - name: shellcheck
         # -S warning explicitly: SC2002 is off by default in shellcheck 0.11+
         # and on in older releases, so the floor has to be pinned or the runner
-        # disagrees with the workstation. -x so the sourced lib/*.sh are read.
-        run: shellcheck -S warning -x protocol-droid.sh lib/*.sh tests/*.sh wip/*.sh
+        # disagrees with the workstation.
+        run: shellcheck -S warning -x protocol-droid.sh tests/*.sh
 
       - name: tests
         run: python3 -m unittest discover -s tests -v
@@ -48,13 +48,3 @@ jobs:
           tests/test-k8s-storage.sh
           tests/test-container.sh
 
-      - name: the Python engine (wip/) - parity with the bash one
-        # The same end-to-end suites, pointed at the Python port through its
-        # launcher, then the function-by-function comparisons. A difference in
-        # behaviour fails here before anyone switches engines.
-        # (test-k8s-storage.sh sources lib/service.sh, so its cases are
-        # compared in wip/tests instead.)
-        run: |
-          PROTOCOL_DROID="$PWD/wip/protocol-droid.sh" tests/test-exit-codes.sh
-          PROTOCOL_DROID="$PWD/wip/protocol-droid.sh" tests/test-container.sh
-          python3 -m unittest discover -s wip/tests -v

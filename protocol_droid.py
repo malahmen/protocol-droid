@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for the Python engine (work in progress; see wip/README.md)."""
+"""protocol-droid's entry point. protocol-droid.sh runs this; so can you."""
 import os
 import sys
 

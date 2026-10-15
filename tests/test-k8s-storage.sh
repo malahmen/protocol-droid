@@ -17,16 +17,22 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 FAILS=0
 check() { local d="$1"; shift; if "$@"; then echo "   ok   - $d"; else echo "   FAIL - $d"; FAILS=$((FAILS + 1)); fi; }
 
-# render [VAR=value ...] — svc_render_pvcs with the given settings; stdout to
+# render [VAR=value ...] — pdroid.service.render_pvcs with the given settings; stdout to
 # $T/out, stderr to $T/err, exit code to RC. The project .env is replaced by
 # one holding $ENV_CONTENT (empty by default), so the developer's own .env never
 # leaks in.
 render() {
     printf '%s\n' "${ENV_CONTENT:-}" > "$T/env"
-    env -u K8S_STORAGE_CLASS -u K8S_ACCESS_MODE "$@" bash -c '
-        HERE="$1"; source "$1/lib/service.sh"; ENV_FILE="$2"
-        error_exit() { echo "ERR: $*" >&2; exit 1; }
-        svc_env_load; svc_render_pvcs' _ "$ROOT" "$T/env" > "$T/out" 2> "$T/err"
+    env -u K8S_STORAGE_CLASS -u K8S_ACCESS_MODE PROTOCOL_DROID_ENV_FILE="$T/env" "$@" python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from pdroid import service, ui
+try:
+    service.env_load()
+    sys.stdout.write(service.render_pvcs())
+except ui.Fatal as exc:
+    print("ERR:", exc, file=sys.stderr)
+    sys.exit(1)' "$ROOT" > "$T/out" 2> "$T/err"
     RC=$?
 }
 # claim <name> — the rendered manifest of one claim.

@@ -164,9 +164,9 @@ out="$T/out7"
 run local convert --backend markitdown --output-dir "$out" "$T/in6/a.docx"
 check "a baseline run exits 0" test "$RC" -eq 0
 PROTOCOL_DROID="$T/copy/protocol-droid.sh"
-mkdir -p "$T/copy/lib"
-cp "${TEST_DIR}/../protocol-droid.sh" "$T/copy/"
-cp "${TEST_DIR}/../lib/"*.sh "$T/copy/lib/"
+mkdir -p "$T/copy"
+cp "${TEST_DIR}/../protocol-droid.sh" "${TEST_DIR}/../protocol_droid.py" "$T/copy/"
+cp -R "${TEST_DIR}/../pdroid" "$T/copy/"
 # ... with provenance.py deliberately absent from the copy.
 out="$T/out8"
 bash "$T/copy/protocol-droid.sh" local convert --backend markitdown \
