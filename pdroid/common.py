@@ -19,9 +19,9 @@ import io
 from .ui import Fatal, error_exit, info, success, warn
 
 # The repository root: provenance.py, the Dockerfile, k8s/ and the compose file
-# live there, one level above wip/. PROTOCOL_DROID_ROOT overrides it (tests).
+# live there, next to pdroid/. PROTOCOL_DROID_ROOT overrides it (tests).
 ROOT = os.environ.get("PROTOCOL_DROID_ROOT") or os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULT_OUTPUT_DIR = "./converted"
 DEFAULT_DEPTH = 3
