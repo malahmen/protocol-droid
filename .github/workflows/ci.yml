@@ -46,3 +46,4 @@ jobs:
         run: |
           tests/test-exit-codes.sh
           tests/test-k8s-storage.sh
+          tests/test-container.sh

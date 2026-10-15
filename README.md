@@ -140,6 +140,40 @@ manager; set `PROTOCOL_DROID_NO_OPEN=1` to suppress that (CI, cron, TUIs).
 `local convert` exits non-zero when any file failed to convert (in `auto` mode,
 after both backends have run), so a cron job or CI step sees the failure.
 
+### Container mode (marker, nothing installed)
+
+marker from the service image, run once on local files - no pipx, no
+particular Python, no torch on the host. It is the same image the service runs
+(`marker-service:latest`), calling the same `convert_document`, so a container
+conversion writes the same folders and the same provenance sidecar as a queued one.
+
+```sh
+protocol-droid.sh container build                         # the image (same as `service build`)
+protocol-droid.sh container convert ./docs                # folders, files, or both -> ./converted
+protocol-droid.sh container convert --output-format json --page-range 0-4 report.pdf
+protocol-droid.sh container bench ./sample-pdfs           # time the model load vs each document
+protocol-droid.sh container status
+```
+
+- Each input's folder is mounted **read-only** and the output folder read-write, **at their own paths**, so no path is rewritten.
+- The models download once into the named volume `protocol-droid-models` (`PROTOCOL_DROID_MODELS_VOLUME`), not per run.
+- `--runtime podman|docker` (default: podman if present). On rootless podman the caller is mapped onto the image's `app` user, so outputs belong to the caller; docker on Linux writes them as uid 1000 and says so.
+- markitdown is not in the image - it is a pip package with no models, and `local --backend markitdown` already isolates it.
+
+**`bench`** answers the question the converter-services report could only reason
+about: what does keeping marker's models resident save? It loads the models
+once, timed on their own, then converts each document, timed one by one, and
+writes a JSON report (`--report FILE`, default `./marker-bench-<host>-<time>.json`):
+
+| Field | Means |
+| --- | --- |
+| `model_load_seconds` | what every per-file CLI run pays, and a resident worker pays once |
+| `warm.seconds_per_document`, `warm.seconds_per_page`, `warm.pages_per_minute` | throughput once the models are loaded |
+| `resident_saving.speedup` | (load + per-document) / per-document: how much faster a resident worker is per file |
+| `host`, `versions` | where it ran (the host's name, CPUs visible, torch threads and device) and marker / surya / torch versions |
+
+`--runs N` converts the set N times. The first run on a machine also downloads the models; run it twice and read the second report.
+
 ### Service mode (containerized, scalable)
 
 ```
@@ -451,6 +485,8 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
 | `tests/test_provenance.py` | 34 | what the sidecar records, what it redacts, and the script interface the bash backends use |
 | `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
+| `tests/test_cli.py` | 11 | the container entry: `bench`'s arithmetic (load timed apart, the resident saving), `convert`'s batch and exit codes - marker replaced, never loaded |
+| `tests/test-container.sh` | 23 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host |
 
 `tests/test-exit-codes.sh` is the one that would have caught this round's bugs:
 run against the previous commit it fails 22 of its checks. Every case in it is
