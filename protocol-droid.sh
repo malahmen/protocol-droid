@@ -30,6 +30,7 @@ protocol-droid — multi-backend document→Markdown conversion
 
 USAGE
   protocol-droid.sh local   <command> [--backend marker|markitdown|auto] [flags]
+  protocol-droid.sh container <command> [--runtime podman|docker] [flags]
   protocol-droid.sh service <command> [--target docker|k8s] [flags]
 
 LOCAL — run a converter on this machine (isolated in a pipx environment).
@@ -53,6 +54,15 @@ LOCAL — run a converter on this machine (isolated in a pipx environment).
 
   convert PATH rules: one file -> that file; a folder -> its convertible files;
   several files -> batch. marker/markitdown feature flags go after '--'.
+
+CONTAINER — marker from the service image, run once on local files. Nothing is
+  installed on this host; the models download once into a named volume.
+  build                                       build the image (same as service build)
+  convert [--output-format F] [--output-dir D] [--page-range R] [--force-ocr] PATH...
+  bench [--runs N] [--report FILE] PATH...    time the model load vs each document;
+                                              writes a JSON report (default ./marker-bench-<host>-<time>.json)
+  status                                      image and model cache
+  --runtime podman|docker (default: podman if present, else docker; or PROTOCOL_DROID_RUNTIME)
 
 SERVICE — containerized marker workers (Redis queue + FastAPI enqueue API).
   build | deploy [--input DIR] [--output DIR] | status | logs |
@@ -167,8 +177,9 @@ main() {
     case "$mode" in
         local)   local_main "$@" ;;
         service) source "${HERE}/lib/service.sh"; service_main "$@" ;;
+        container) source "${HERE}/lib/marker.sh"; source "${HERE}/lib/container.sh"; container_main "$@" ;;
         ""|-h|--help) usage ;;
-        *) usage; error_exit "unknown mode: $mode (expected 'local' or 'service')" ;;
+        *) usage; error_exit "unknown mode: $mode (expected 'local', 'container' or 'service')" ;;
     esac
 }
 

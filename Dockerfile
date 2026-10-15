@@ -119,7 +119,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -c "from marker.util import download_font; download_font()" \
     && python -c "import os; from marker.settings import settings; assert os.path.getsize(settings.FONT_PATH) > 0, settings.FONT_PATH"
 
-COPY provenance.py tasks.py worker.py api.py enqueue_batch.py ./
+COPY provenance.py tasks.py worker.py api.py enqueue_batch.py cli.py ./
 
 # Run unprivileged. /data/{input,output} and /models are the mount points; a
 # host bind mount must be writable by uid 1000 (k8s: fsGroup 1000 or an RWX
