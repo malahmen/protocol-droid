@@ -12,7 +12,10 @@ Env:
   MARKER_QUEUE          default "marker"
   INPUT_DIR             default /data/input  — `path` must live under it
   OUTPUT_DIR            default /data/output — `output_dir` must live under it
-  JOB_TIMEOUT           default 3600 (seconds)
+  JOB_TIMEOUT           unset = sized per job (below); set = that many seconds for every job
+  JOB_TIMEOUT_BASE      default 1800 (seconds) — every job's allowance before its pages
+  JOB_TIMEOUT_PER_PAGE  default 180 (seconds) — per page: ~3x OCR's measured 54.7 s/page
+  JOB_TIMEOUT_UNKNOWN   default 21600 (seconds) — when the page count cannot be known
   RESULT_TTL            default 86400 (seconds) — how long results/failures stay in Redis
   PAGE_RANGE_MAX_PAGES  default 2000 — most pages one job's page_range may cover
   PAGE_RANGE_MAX_INDEX  default 100000 — highest page number a page_range may name
@@ -40,7 +43,6 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 QUEUE_NAME = os.environ.get("MARKER_QUEUE", "marker")
 INPUT_DIR = os.path.realpath(os.environ.get("INPUT_DIR", "/data/input"))
 OUTPUT_DIR = os.path.realpath(os.environ.get("OUTPUT_DIR", "/data/output"))
-JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "3600"))
 RESULT_TTL = int(os.environ.get("RESULT_TTL", "86400"))
 API_TOKEN = os.environ.get("PROTOCOL_DROID_TOKEN", "")
 
@@ -65,7 +67,7 @@ def confine(path: str, root: str, what: str) -> str:
 
 app = FastAPI(title="protocol-droid conversion API", dependencies=[Depends(require_token)])
 _conn = tasks.redis_connection(REDIS_URL)
-_queue = Queue(QUEUE_NAME, connection=_conn, default_timeout=JOB_TIMEOUT)
+_queue = Queue(QUEUE_NAME, connection=_conn)
 
 
 class JobIn(BaseModel):
@@ -119,7 +121,9 @@ def enqueue(body: JobIn):
         opts["page_range"] = page_range
 
     try:
+        # Sized per job, not one queue-wide number: see tasks.job_timeout.
         job = _queue.enqueue(tasks.convert_document, path, opts, input_root=INPUT_DIR,
+                             job_timeout=tasks.job_timeout(path, opts),
                              result_ttl=RESULT_TTL, failure_ttl=RESULT_TTL)
     except RedisError:
         raise HTTPException(503, "redis unavailable")

@@ -183,6 +183,87 @@ def validate_options(options: dict | None) -> dict:
     return opts
 
 
+
+# --- how long one job may run ------------------------------------------------
+#
+# RQ kills a job at its timeout. With SimpleWorker that timeout is two things
+# at once: the cap on a wedged job, and the ceiling on the largest document the
+# service can convert at all. One fixed number cannot be both. It was 3600s,
+# and on corelia (32 threads, no GPU; measured 2026-10-16) OCR runs at
+# 54.7 s/page - so every scanned PDF over ~66 pages was killed part-way through,
+# while a hung three-page job still held its worker for the full hour.
+#
+# So each job is sized from what it will actually convert: a base for the work
+# a job can owe once (a cold model cache downloads the OCR weights inside the
+# first job, which took minutes; a fresh process costs ~28s before its first
+# page even with the cache warm) plus a budget per page, ~3x the measured OCR
+# rate, for slower nodes and a busy host (a game running beside the
+# measurement cost 1.12x). Pages are the PDF's page count, cut
+# to the page_range when one is given; an image is one page. When the count
+# cannot be known (an office document, a file the API cannot read) the job
+# gets JOB_TIMEOUT_UNKNOWN. use_llm adds LLM calls per page that were never
+# measured; JOB_TIMEOUT_PER_PAGE is the knob if they turn out to matter.
+#
+# JOB_TIMEOUT, when set, still fixes every job's timeout: an operator who chose
+# a number keeps it.
+_FIXED = os.environ.get("JOB_TIMEOUT", "").strip()
+JOB_TIMEOUT = int(_FIXED) if _FIXED else None
+JOB_TIMEOUT_BASE = int(os.environ.get("JOB_TIMEOUT_BASE", "1800"))
+JOB_TIMEOUT_PER_PAGE = int(os.environ.get("JOB_TIMEOUT_PER_PAGE", "180"))
+JOB_TIMEOUT_UNKNOWN = int(os.environ.get("JOB_TIMEOUT_UNKNOWN", "21600"))
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".gif", ".bmp"}
+
+
+def page_count(fpath: str) -> int | None:
+    """Pages in a PDF, 1 for an image, None when it cannot be known.
+
+    pypdfium2 is a marker dependency, so this counts in every role that runs
+    the service image; anywhere it is missing the answer is simply None.
+    """
+    ext = os.path.splitext(fpath)[1].lower()
+    if ext in IMAGE_EXTS:
+        return 1
+    if ext != ".pdf":
+        return None
+    try:
+        import pypdfium2
+        doc = pypdfium2.PdfDocument(fpath)
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001 - a count only sizes a timeout; never fail a request over it
+        return None
+
+
+def _page_range_size(spec: str) -> int:
+    """Pages covered by a page_range already through validate_page_range."""
+    total = 0
+    for item in spec.split(","):
+        lo, _, hi = item.partition("-")
+        total += (int(hi) if hi else int(lo)) - int(lo) + 1
+    return total
+
+
+def job_pages(fpath: str, options: dict | None = None) -> int | None:
+    """How many pages this job will convert, or None if that cannot be known."""
+    pages = page_count(fpath)
+    spec = (options or {}).get("page_range")
+    if spec:
+        in_range = _page_range_size(validate_page_range(spec))
+        pages = in_range if pages is None else min(pages, in_range)
+    return pages
+
+
+def job_timeout(fpath: str, options: dict | None = None) -> int:
+    """Seconds RQ lets this job run (see the comment above)."""
+    if JOB_TIMEOUT is not None:
+        return JOB_TIMEOUT
+    pages = job_pages(fpath, options)
+    if pages is None:
+        return JOB_TIMEOUT_UNKNOWN
+    return JOB_TIMEOUT_BASE + pages * JOB_TIMEOUT_PER_PAGE
+
 def redis_connection(url: str | None = None):
     """The Redis connection every role uses (api, worker, batch enqueuer).
 
@@ -204,6 +285,79 @@ def get_models():
         _models = create_model_dict()
     return _models
 
+
+
+# --- warming a worker up -----------------------------------------------------
+#
+# get_models() loads the layout model and nothing else (3.6s on corelia). The
+# first conversion in a process then pays torch's warm-up, the first one that
+# OCRs anything starts surya's llama-server and loads the OCR weights, and the
+# first table has a first-use cost of its own. Measured 2026-10-16: one scanned
+# page took 25.5s as a fresh worker's first job and 15.2s after a warm-up page
+# (12.8s for the next page either way); a 30-page manual with tables took
+# 111.4s first after a warm-up page of prose, against ~97s on repeats, and
+# 92.3s once the warm-up page carried a table. The worker called get_models()
+# alone and said the first job would not be slow; it was.
+#
+# prewarm() converts one generated page - prose and a ruled table, no text
+# layer - with OCR forced, so all of it is paid at startup. On a cold model
+# cache it is also what downloads the OCR weights, which then no longer happens
+# inside a caller's first job and against that job's timeout. A failure is reported, never raised: a worker that could
+# not warm up still takes jobs, it is only slow on the first one.
+# WORKER_PREWARM=0 skips it.
+_PREWARM_TEXT = (
+    "protocol-droid worker warm-up",
+    "One page of generated text, converted with OCR forced,",
+    "so the first real job does not start llama-server.",
+)
+
+
+def _text_page_pdf(path: str) -> None:
+    """Write a one-page, image-only PDF of a few lines of text (no text layer)."""
+    from PIL import Image, ImageDraw, ImageFont
+    try:
+        from marker.settings import settings
+        font = ImageFont.truetype(settings.FONT_PATH, 40)
+    except Exception:  # noqa: BLE001 - any legible font will do
+        font = ImageFont.load_default()
+    page = Image.new("RGB", (1240, 1754), "white")  # A4 at 150 dpi
+    draw = ImageDraw.Draw(page)
+    for i, line in enumerate(_PREWARM_TEXT):
+        draw.text((100, 150 + 80 * i), line, fill="black", font=font)
+    # A ruled table too: the first table marker meets in a process has its own
+    # first-use cost, which a page of prose leaves for the first real job.
+    left, top, cols, rows, w, h = 100, 500, 4, 5, 260, 90
+    for r in range(rows + 1):
+        draw.line((left, top + r * h, left + cols * w, top + r * h), fill="black", width=3)
+    for c in range(cols + 1):
+        draw.line((left + c * w, top, left + c * w, top + rows * h), fill="black", width=3)
+    for r in range(rows):
+        for c in range(cols):
+            cell = ("Item", "Pages", "Seconds", "Rate")[c] if r == 0 else f"{r * 7 + c * 3}"
+            draw.text((left + c * w + 20, top + r * h + 22), cell, fill="black", font=font)
+    page.save(path, "PDF", resolution=150)
+
+
+def prewarm() -> float | None:
+    """Pay the first-conversion costs now. Seconds taken, or None if skipped or failed."""
+    if os.environ.get("WORKER_PREWARM", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    import shutil
+    import sys
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="pd-prewarm-")
+    try:
+        pdf = os.path.join(tmp, "prewarm.pdf")
+        _text_page_pdf(pdf)
+        started = time.perf_counter()
+        convert_document(pdf, {"output_format": "markdown", "output_dir": tmp, "force_ocr": True})
+        return time.perf_counter() - started
+    except Exception as exc:  # noqa: BLE001 - see above: report, keep serving
+        print(f"[worker] warm-up failed ({type(exc).__name__}: {exc}); "
+              "the first job will pay it instead", file=sys.stderr, flush=True)
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 def output_folder(fpath: str, output_dir: str, input_root: str | None = None) -> str:
     """Where one document's output goes: <output_dir>/<relative dir>/<stem>_<ext>/.

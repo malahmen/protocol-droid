@@ -7,7 +7,9 @@ Usage:
                           [--use_llm] [--force_ocr]
 
 Env mirrors the workers: REDIS_URL, REDIS_PASSWORD, MARKER_QUEUE, OUTPUT_DIR, OUTPUT_FORMAT,
-JOB_TIMEOUT, RESULT_TTL (seconds a result/failure stays in Redis; default 24h).
+RESULT_TTL (seconds a result/failure stays in Redis; default 24h), and the job
+timeout: sized per document from its page count unless JOB_TIMEOUT fixes it
+(JOB_TIMEOUT_BASE / _PER_PAGE / _UNKNOWN - see tasks.job_timeout).
 """
 import argparse
 import os
@@ -36,11 +38,7 @@ def main():
 
     result_ttl = int(os.environ.get("RESULT_TTL", "86400"))
     conn = tasks.redis_connection()
-    queue = Queue(
-        os.environ.get("MARKER_QUEUE", "marker"),
-        connection=conn,
-        default_timeout=int(os.environ.get("JOB_TIMEOUT", "3600")),
-    )
+    queue = Queue(os.environ.get("MARKER_QUEUE", "marker"), connection=conn)
 
     input_root = os.path.realpath(args.input_dir)
     count = 0
@@ -57,6 +55,7 @@ def main():
             # input_root: the output mirrors the tree under input_dir, so files
             # with the same name in different folders don't overwrite each other.
             queue.enqueue(tasks.convert_document, path, opts, input_root=input_root,
+                          job_timeout=tasks.job_timeout(path, opts),
                           result_ttl=result_ttl, failure_ttl=result_ttl)
             count += 1
 
