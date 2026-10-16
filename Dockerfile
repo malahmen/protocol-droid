@@ -116,8 +116,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 # package dir (site-packages/static/fonts). That dir is root-owned and the
 # service runs as uid 1000, so every conversion failed with EACCES. Fetch it
 # now, as root, so nothing has to be written there at runtime.
-RUN python -c "from marker.util import download_font; download_font()" \
-    && python -c "import os; from marker.settings import settings; assert os.path.getsize(settings.FONT_PATH) > 0, settings.FONT_PATH"
+#
+# Retried: models.datalab.to reset one build mid-handshake (2026-10-15), which
+# threw away a build that had already reached the 6.8 GB pip layer. Two traps
+# in a plain retry: download_font() skips a file that exists, and a reset
+# mid-stream leaves a truncated one. So a failed attempt removes the file, and
+# success means the font loads - a size check passes a truncated file.
+RUN for attempt in 1 2 3 4 5; do \
+        python -c "from marker.util import download_font; download_font()" \
+        && python -c "from PIL import ImageFont; from marker.settings import settings; ImageFont.truetype(settings.FONT_PATH, 12)" \
+        && exit 0; \
+        rm -f "$(python -c 'from marker.settings import settings; print(settings.FONT_PATH)')"; \
+        echo "font fetch failed (attempt ${attempt} of 5)" >&2; \
+        [ "${attempt}" -lt 5 ] && sleep $((attempt * 5)); \
+    done; exit 1
 
 COPY provenance.py tasks.py worker.py api.py enqueue_batch.py cli.py ./
 
