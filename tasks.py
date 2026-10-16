@@ -13,7 +13,7 @@ import time
 # Provenance lives in its own module because the bash backends run it as a
 # script (`python3 provenance.py`), so the local, container and service
 # execution modes all emit the SAME sidecar from the same code.
-from provenance import provenance_record, write_provenance
+from provenance import PROVENANCE_FILE, provenance_record, write_provenance
 
 # Match marker's CLI environment (quiet gRPC/glog, MPS fallback for Macs).
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
@@ -440,3 +440,57 @@ def convert_document(fpath: str, options: dict | None = None, input_root: str | 
     write_provenance(out_folder, provenance_record(
         fpath, out_folder, validated, started, time.time(), input_root))
     return out_folder
+
+
+# --- the conversion API's converter port -------------------------------------
+#
+# protocol (the conversion API) runs this image as its marker worker and calls
+# converters through one port: convert(data, original_name, options) ->
+# (files, tool_versions) - bytes in, every output file as bytes out. It owns
+# the stores, so a path in or a folder out means nothing to it.
+#
+# Each call converts in a folder of its own and removes it, so nothing is left
+# on the worker and two calls never share an output folder. The caller's
+# output_dir is ignored: where the files end up is the caller's store.
+#
+# The sidecar is NOT among the files. protocol writes its own provenance.json
+# under the same key after the converter's files, so passing this one through
+# would have it silently replaced. Its versions come back as tool_versions
+# instead, read from the record written for this very conversion rather than
+# looked up again.
+def convert_bytes(data: bytes, original_name: str, options: dict | None = None):
+    """Convert one document given as bytes: (files {relative name: bytes}, tool_versions)."""
+    import json
+    import shutil
+    import tempfile
+
+    # The name is only used to give marker a file with the right extension;
+    # a path in it must not choose where that file is written.
+    name = os.path.basename((original_name or "").replace("\\", "/")).strip() or "document"
+    if name in (".", ".."):
+        name = "document"
+    tmp = tempfile.mkdtemp(prefix="pd-convert-")
+    try:
+        src_dir = os.path.join(tmp, "in")
+        os.makedirs(src_dir)
+        src = os.path.join(src_dir, name)
+        with open(src, "wb") as fh:
+            fh.write(data)
+        opts = dict(options or {})
+        opts["output_dir"] = os.path.join(tmp, "out")
+        out_folder = convert_document(src, opts)
+
+        files, versions = {}, {}
+        for root, _dirs, names in os.walk(out_folder):
+            for fname in sorted(names):
+                full = os.path.join(root, fname)
+                rel = os.path.relpath(full, out_folder).replace(os.sep, "/")
+                if rel == PROVENANCE_FILE:
+                    with open(full, encoding="utf-8") as fh:
+                        versions = dict(json.load(fh).get("versions") or {})
+                    continue
+                with open(full, "rb") as fh:
+                    files[rel] = fh.read()
+        return files, {k: str(v) for k, v in versions.items()}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
