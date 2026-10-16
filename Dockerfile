@@ -131,7 +131,7 @@ RUN for attempt in 1 2 3 4 5; do \
         [ "${attempt}" -lt 5 ] && sleep $((attempt * 5)); \
     done; exit 1
 
-COPY provenance.py tasks.py worker.py api.py enqueue_batch.py cli.py ./
+COPY port.py provenance.py tasks.py worker.py api.py enqueue_batch.py cli.py ./
 
 # Run unprivileged. /data/{input,output} and /models are the mount points; a
 # host bind mount must be writable by uid 1000 (k8s: fsGroup 1000 or an RWX

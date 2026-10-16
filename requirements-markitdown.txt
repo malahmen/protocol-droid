@@ -1,0 +1,8 @@
+# The markitdown worker image (Dockerfile.markitdown). Pinned; bump deliberately.
+# 0.1.8 released 2026-09-21.
+#
+# Extras are the formats protocol routes to its markitdown queue and nothing
+# else: not pdf (marker's queue), not audio-transcription (Speaches'), and not
+# youtube-transcription, az-doc-intel or az-content-understanding, which reach
+# the internet or Azure from a worker that should not.
+markitdown[docx,pptx,xlsx,xls,outlook]==0.1.8

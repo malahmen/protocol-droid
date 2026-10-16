@@ -449,8 +449,8 @@ def convert_document(fpath: str, options: dict | None = None, input_root: str | 
 # (files, tool_versions) - bytes in, every output file as bytes out. It owns
 # the stores, so a path in or a folder out means nothing to it.
 #
-# Each call converts in a folder of its own and removes it, so nothing is left
-# on the worker and two calls never share an output folder. The caller's
+# Each call converts in a folder of its own and removes it, under a name a path
+# cannot steer (port.scratch, shared with markitdown's image). The caller's
 # output_dir is ignored: where the files end up is the caller's store.
 #
 # The sidecar is NOT among the files. protocol writes its own provenance.json
@@ -461,21 +461,10 @@ def convert_document(fpath: str, options: dict | None = None, input_root: str | 
 def convert_bytes(data: bytes, original_name: str, options: dict | None = None):
     """Convert one document given as bytes: (files {relative name: bytes}, tool_versions)."""
     import json
-    import shutil
-    import tempfile
 
-    # The name is only used to give marker a file with the right extension;
-    # a path in it must not choose where that file is written.
-    name = os.path.basename((original_name or "").replace("\\", "/")).strip() or "document"
-    if name in (".", ".."):
-        name = "document"
-    tmp = tempfile.mkdtemp(prefix="pd-convert-")
-    try:
-        src_dir = os.path.join(tmp, "in")
-        os.makedirs(src_dir)
-        src = os.path.join(src_dir, name)
-        with open(src, "wb") as fh:
-            fh.write(data)
+    from port import scratch
+
+    with scratch(data, original_name) as (tmp, src):
         opts = dict(options or {})
         opts["output_dir"] = os.path.join(tmp, "out")
         out_folder = convert_document(src, opts)
@@ -492,5 +481,3 @@ def convert_bytes(data: bytes, original_name: str, options: dict | None = None):
                 with open(full, "rb") as fh:
                     files[rel] = fh.read()
         return files, {k: str(v) for k, v in versions.items()}
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)

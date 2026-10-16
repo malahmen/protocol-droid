@@ -393,6 +393,35 @@ valid manifest with the defaults; `kubectl apply -f` it by hand and it binds on
 a single node. Claims are immutable: changing an existing claim's class or mode
 means deleting it first (a `Pending` one holds no data).
 
+### protocol's converter port (two images)
+
+[protocol](https://github.com/malahmen/protocol), the conversion API, runs these
+images as its workers and calls each converter with the document as bytes:
+
+| Image | Built from | Converter | Port |
+| --- | --- | --- | --- |
+| `marker-service:latest` | `Dockerfile` | marker: PDF and images | `tasks.convert_bytes` |
+| `markitdown-service:latest` | `Dockerfile.markitdown` | markitdown: DOCX, PPTX, XLSX, XLS, Outlook, HTML, EPUB, CSV... | `markitdown_tasks.convert_bytes` |
+
+Both take `(data, original_name, options)` and return `(files, tool_versions)`:
+every output file as bytes, keyed by its relative name. Each converts in a
+scratch folder of its own (`port.py`) that a path in the name cannot steer, and
+removes it. The engine's `provenance.json` is not among the files - protocol
+writes its own under the same key - so its versions come back as
+`tool_versions` instead.
+
+markitdown has an image of its own because it needs nothing of marker's: 430 MB
+against 6.8 GB, the same split protocol makes with a queue per converter. It
+installs only the extras protocol routes to it (docx, pptx, xlsx, xls, outlook),
+keeps plugins off, converts local files only (never a URL), and takes no options.
+
+```sh
+podman build -f Dockerfile.markitdown -t markitdown-service:latest .
+podman run --rm markitdown-service:latest              # what is installed
+podman run --rm --security-opt label=disable -v "$PWD:/w:ro" \
+  markitdown-service:latest python -m markitdown_tasks /w/report.docx
+```
+
 ## Exit codes
 
 Every `convert` path ends on one of these. They exist because a scripted caller
@@ -498,6 +527,9 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_cli.py` | 11 | the container entry: `bench`'s arithmetic (load timed apart, the resident saving), `convert`'s batch and exit codes - marker replaced, never loaded |
 | `tests/test-container.sh` | 23 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host |
 | `tests/test-k8s-storage.sh` | 22 | the volume claims `service deploy --target k8s` renders: access mode and storage class from the environment or `.env` |
+| `tests/test_job_timeout.py` | 18 | each job's timeout sized from its pages (a 166-page scan no longer killed at an hour), and the worker's warm-up |
+| `tests/test_convert_bytes.py` | 9 | marker at protocol's port: bytes in, files out, the sidecar kept out, no path from the name |
+| `tests/test_markitdown_tasks.py` | 10 | markitdown at protocol's port, and `port.py`: `convert_local` only, plugins off, no options |
 | `tests/test_engine.py` | 9 | the folder scanner, output naming and exit-code severity, pinned to v1.0.0's bash answers |
 
 `tests/test-exit-codes.sh` is the one that would have caught this round's bugs:
