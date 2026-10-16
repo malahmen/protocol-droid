@@ -1,0 +1,11 @@
+# What CI's `api-and-queue` job installs: the service's API and queue
+# libraries, pinned as in requirements.txt, plus an HTTP test client - and
+# not marker, which drags torch and several GB of models. Enough to test what
+# api.py refuses and that the worker runs only its one job function.
+fastapi==0.141.1
+python-multipart==0.0.32
+rq==2.12.0
+redis==8.1.0
+# FastAPI's test client; starlette 1.8 deprecates plain httpx in its favour
+# (the same pin protocol uses).
+httpx2==2.13.1

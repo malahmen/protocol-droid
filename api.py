@@ -91,6 +91,11 @@ def healthz():
 @app.post("/jobs")
 def enqueue(body: JobIn):
     path = confine(body.path, INPUT_DIR, "path")
+    # One document per job: a folder (enqueue_batch.py walks those) or a path
+    # that does not exist was accepted here and failed later in the worker,
+    # costing a queue slot and a worker's time to say what this can say now.
+    if not os.path.isfile(path):
+        raise HTTPException(400, "path must be an existing file (a folder: use enqueue_batch.py)")
     output_dir = confine(body.output_dir or OUTPUT_DIR, OUTPUT_DIR, "output_dir")
     # Both are rejected here with a 400 rather than left for the worker.
     # output_format reached marker unchecked and failed the job; page_range

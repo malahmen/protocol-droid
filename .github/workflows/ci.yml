@@ -71,3 +71,22 @@ jobs:
         # The documents are generated inside the image; --network=none is part
         # of the check: the worker converts what it is handed and fetches nothing.
         run: docker run --rm -i --network=none markitdown-service:ci python - < tests/markitdown_image_check.py
+
+  api-and-queue:
+    # The service's API and queue code, which the stdlib job above cannot
+    # import: fastapi and rq, from requirements-ci.txt - not marker, which
+    # drags torch and several GB of models. The suite is the same; here the
+    # checks that skip above run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install
+        run: python3 -m pip install -r requirements-ci.txt
+
+      - name: tests
+        run: python3 -m unittest discover -s tests -v
