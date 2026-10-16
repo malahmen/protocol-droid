@@ -81,5 +81,29 @@ class OneFilePerJob(ApiCase):
         self.assertIn("must be under", r.json()["detail"])
 
 
+class DocsBehindTheToken(ApiCase):
+    """Item 53: with a token set, /docs and /openapi.json answered without it."""
+
+    def test_with_a_token_the_docs_need_it_too(self):
+        for path in ("/docs", "/openapi.json", "/redoc"):
+            self.assertIn(self.client.get(path).status_code, (401, 404), msg=path)
+        self.assertEqual(self.client.get("/openapi.json", headers=self.auth()).status_code, 200)
+        self.assertEqual(self.client.get("/docs", headers=self.auth()).status_code, 200)
+
+    def test_the_schema_still_describes_the_api(self):
+        paths = self.client.get("/openapi.json", headers=self.auth()).json()["paths"]
+        self.assertIn("/jobs", paths)
+        self.assertNotIn("/docs", paths)          # the docs do not document themselves
+
+
+class OpenWithoutAToken(ApiCase):
+    """No token: the API is open, and so are its docs (as before)."""
+    token = None
+
+    def test_the_docs_answer(self):
+        self.assertEqual(self.client.get("/docs").status_code, 200)
+        self.assertEqual(self.client.get("/openapi.json").status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

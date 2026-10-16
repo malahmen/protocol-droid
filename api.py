@@ -31,6 +31,7 @@ import os
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel
 from redis.exceptions import RedisError
 from rq import Queue
@@ -65,7 +66,23 @@ def confine(path: str, root: str, what: str) -> str:
     return real
 
 
-app = FastAPI(title="protocol-droid conversion API", dependencies=[Depends(require_token)])
+# FastAPI serves /docs, /redoc and /openapi.json outside the app's
+# dependencies, so with a token set they still answered anyone. They are
+# turned off and the schema and docs served as ordinary routes, which the
+# token check covers like every other; with no token the API is open, and so
+# are they. /redoc is dropped: /docs is enough.
+app = FastAPI(title="protocol-droid conversion API", dependencies=[Depends(require_token)],
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_schema():
+    return app.openapi()
+
+
+@app.get("/docs", include_in_schema=False)
+def docs():
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title)
 _conn = tasks.redis_connection(REDIS_URL)
 _queue = Queue(QUEUE_NAME, connection=_conn)
 
