@@ -8,13 +8,28 @@ container conversion writes the same folders and the same provenance sidecars.
 
   python cli.py convert [--output-format F] [--output-dir D] [--page-range R]
                         [--force-ocr] FILE...
-  python cli.py bench   [--output-dir D] [--runs N] [--report FILE] FILE...
+  python cli.py bench   [--output-dir D] [--runs N] [--report FILE]
+                        [--page-range R] [--force-ocr] [--no-cold] FILE...
 
-`bench` answers the question the converter-services report could not settle
-by reasoning: what does keeping the models resident save? It times the model
-load separately from each conversion, so the two costs a per-file CLI pays and
-a resident worker does not can be read off directly. It prints one JSON report
-(and writes it to --report when given).
+`bench` answers what keeping the models resident saves, per document, and
+what each kind of page costs. Schema protocol-droid/bench/2 (Kamino items 64
+and 65). The first version timed only tasks.get_models() as the overhead -
+3.6s, where a per-file CLI really pays ~28s once OCR is involved - and on that
+gave a wrong answer to a gating decision; and it averaged text-layer and OCR
+pages together, which differ ~18x. So:
+
+  - the per-invocation overhead is MEASURED, not inferred: for each path (text
+    layer, OCR), page 0 of one PDF is converted in fresh processes and again
+    in this one once it is warm, and the overhead is the difference. That is
+    what a per-file CLI pays - imports, models, warm-up, and llama-server once
+    anything is OCR'd - short of the container start, which a container per
+    file adds on top;
+  - the timed runs start warm (tasks.prewarm first, timed on its own), so no
+    document carries the process's first-conversion costs;
+  - `warm` is reported per path, never blended, and the resident saving per
+    document, against its own path's overhead.
+
+It prints one JSON report (and writes it to --report when given).
 
 Exit codes match the bash backends: 0 all converted, 1 any conversion failed,
 2 an input was missing.
@@ -23,6 +38,7 @@ import argparse
 import json
 import os
 import platform
+import subprocess
 import sys
 import tempfile
 import time
@@ -31,7 +47,7 @@ import tasks
 from provenance import tool_versions
 
 EX_OK, EX_FAILED, EX_NO_INPUT = 0, 1, 2
-BENCH_SCHEMA = "protocol-droid/bench/1"
+BENCH_SCHEMA = "protocol-droid/bench/2"
 
 
 def _options(args) -> dict:
@@ -65,6 +81,135 @@ def _pages(path: str):
     except Exception:  # noqa: BLE001 - a page count is a nicety, never a failure
         return None
 
+
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".gif", ".bmp")
+_TEXT_LAYER_MIN_CHARS = 50     # a scan's stray OCR'd header is not a text layer
+_SAMPLE_PAGES = 3
+
+
+def _range_indices(spec: str) -> list[int]:
+    out = []
+    for item in spec.split(","):
+        lo, _, hi = item.partition("-")
+        out.extend(range(int(lo), (int(hi) if hi else int(lo)) + 1))
+    return out
+
+
+def _facts(path: str, page_range: str | None = None, force_ocr: bool = False):
+    """(pages that will be converted, path) - path is "ocr", "text" or None (unknown).
+
+    A page is OCR'd when the request forces it, when the file is an image, or
+    when the PDF has no text layer (read on its first pages, as protocol's
+    cost estimate reads it).
+    """
+    if path.lower().endswith(IMAGE_EXTS):
+        return 1, "ocr"
+    if not path.lower().endswith(".pdf"):
+        return None, ("ocr" if force_ocr else None)
+    try:
+        import pypdfium2
+        doc = pypdfium2.PdfDocument(path)
+    except Exception:  # noqa: BLE001 - facts only label a measurement
+        return _pages(path), ("ocr" if force_ocr else None)
+    try:
+        total = len(doc)
+        pages = sorted(i for i in set(_range_indices(page_range)) if i < total) if page_range \
+            else list(range(total))
+        if force_ocr:
+            return len(pages), "ocr"
+        chars = 0
+        for i in pages[:_SAMPLE_PAGES]:
+            page = doc[i]
+            try:
+                text = page.get_textpage()
+                try:
+                    chars += len(text.get_text_range().strip())
+                finally:
+                    text.close()
+            finally:
+                page.close()
+        return len(pages), ("text" if chars >= _TEXT_LAYER_MIN_CHARS else "ocr")
+    finally:
+        doc.close()
+
+
+def _clamp(spec: str, total: int) -> str | None:
+    """`spec` cut to the pages a document of `total` pages has; None if none are left.
+
+    marker refuses a range past the end ("values must be between 0 and 2"), so
+    one --page-range for a whole bench set has to be cut to each document.
+    """
+    keep = sorted(i for i in set(_range_indices(spec)) if i < total)
+    if not keep:
+        return None
+    runs, lo = [], keep[0]
+    for prev, cur in zip(keep, keep[1:] + [None]):
+        if cur != prev + 1:
+            runs.append(str(lo) if lo == prev else f"{lo}-{prev}")
+            lo = cur
+    return ",".join(runs)
+
+
+def _cold_run(path: str, page_range: str, out_dir: str, force_ocr: bool) -> float:
+    """Wall seconds for one `convert` in a fresh process: what a per-file CLI pays."""
+    cmd = [sys.executable, os.path.abspath(__file__), "convert", "--page-range", page_range,
+           "--output-dir", out_dir]
+    if force_ocr:
+        cmd.append("--force-ocr")
+    started = time.perf_counter()
+    res = subprocess.run(cmd + [path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    took = time.perf_counter() - started
+    if res.returncode != 0:
+        raise RuntimeError(f"cold convert of {os.path.basename(path)} failed ({res.returncode})")
+    return took
+
+
+def _cold_samples(path: str, out_dir: str, force_ocr: bool) -> dict:
+    """Page 0 converted in fresh processes: what a per-file CLI pays for it.
+
+    A throwaway run primes the page cache first: the first fresh process reads
+    the models from disk and later ones find them cached, so whichever ran
+    first looked dear (seen: 14.7s for one page, 5.5s for two).
+    """
+    def run(n):
+        return _cold_run(path, "0", os.path.join(out_dir, f"cold-{n}"), force_ocr)
+    return {"from": os.path.basename(path), "prime_seconds": round(run(0), 3),
+            "cold_seconds": [round(run(1), 3), round(run(2), 3)]}
+
+
+def _overhead(cold: dict, warm: float) -> dict:
+    """What a fresh process pays for a page beyond what a warm one pays for the same page.
+
+    Measured on one page directly, cold against warm, rather than inferred from
+    one page against two (2A - B): that assumed two pages cost the same, which
+    on light pages is far below the noise. Where cold comes out no dearer than
+    warm, the samples are not measuring the overhead: reported as unknown,
+    never as a number.
+
+    `warm` is ONE conversion of the page, after the timed runs and after a
+    different OCR'd page, with llama-server's prompt cache off (NO_RECALL): a
+    repeated page otherwise came back in 3.0s against 15.1s, and averaging that
+    in made the overhead read 22.9s.
+    """
+    out = dict(cold, warm_seconds=round(warm, 3))
+    a, w = sum(cold["cold_seconds"]) / len(cold["cold_seconds"]), warm
+    out["seconds"] = round(a - w, 3)
+    if a <= w:
+        out["seconds"] = None
+        out["why"] = "a fresh process was no slower than a warm one: these samples do not measure the overhead"
+    return out
+
+def _path_summary(docs: list[dict]) -> dict:
+    seconds = sum(d["seconds"] for d in docs)
+    pages = sum(d["pages"] or 0 for d in docs)
+    return {
+        "documents": len(docs),
+        "pages": pages,
+        "seconds": round(seconds, 3),
+        "seconds_per_page": round(seconds / pages, 3) if pages else None,
+        "pages_per_minute": round(pages * 60 / seconds, 2) if pages and seconds else None,
+    }
 
 def cmd_convert(args) -> int:
     try:
@@ -111,56 +256,158 @@ def _host() -> dict:
     return info
 
 
+# llama-server caches prompts per slot (--cache-prompt, on by default), so a
+# page it has converted comes back from that cache: the same scanned page took
+# 3.0s the second time against 15.1s the first, even with other pages in
+# between. A bench that repeats pages - --runs, the overhead's warm sample -
+# would time recall, not conversion. surya appends LLAMA_CPP_EXTRA_ARGS to the
+# server's command line, so the bench passes --no-cache-prompt. Measured on
+# corelia: with it, pages not seen before take the same time (14.9s / 12.8s
+# against 15.1s / 12.9s) and the repeat takes 15.1s - nothing is lost but the
+# recall. (--cache-ram 0, the host-RAM cache, was tried first and changed
+# nothing: 3.0s.)
+NO_RECALL = "--no-cache-prompt"
+
+
+def _no_recall() -> str:
+    """Set LLAMA_CPP_EXTRA_ARGS so llama-server recalls no earlier prompt; returns it."""
+    extra = os.environ.get("LLAMA_CPP_EXTRA_ARGS", "")
+    words = extra.split()
+    if "--cache-prompt" not in words and "--no-cache-prompt" not in words:
+        extra = f"{extra} {NO_RECALL}".strip()
+        os.environ["LLAMA_CPP_EXTRA_ARGS"] = extra       # inherited by the cold runs
+    return extra
+
+
 def cmd_bench(args) -> int:
     files, missing = _existing(args.files)
     if not files:
         print("[error] nothing to measure", file=sys.stderr)
         return EX_NO_INPUT
     out_dir = args.output_dir or tempfile.mkdtemp(prefix="pd-bench-")
-    opts = tasks.validate_options({"output_format": "markdown", "output_dir": out_dir})
+    llama_args = _no_recall()          # before anything starts a llama-server
+    raw = {"output_format": "markdown", "output_dir": out_dir}
+    if args.page_range:
+        raw["page_range"] = args.page_range
+    if args.force_ocr:
+        raw["force_ocr"] = True
+    opts = tasks.validate_options(raw)
+    facts = {f: _facts(f, opts.get("page_range"), args.force_ocr) for f in files}
+
+    # The overhead's cold half first, before this process loads anything (it
+    # runs in fresh processes anyway): per path, page 0 of the first PDF.
+    overhead, cold, picks = {}, {}, {}
+    if not args.no_cold:
+        for kind in ("text", "ocr"):
+            pick = next((f for f in files if facts[f][1] == kind and f.lower().endswith(".pdf")), None)
+            if pick is None:
+                overhead[kind] = {"seconds": None, "why": f"no {kind} PDF in the set"}
+                continue
+            try:
+                cold[kind], picks[kind] = _cold_samples(pick, os.path.join(out_dir, f"cold-{kind}"),
+                                                        args.force_ocr), pick
+            except RuntimeError as exc:
+                overhead[kind] = {"seconds": None, "why": str(exc)}
 
     started = time.perf_counter()
     tasks.get_models()
     load = time.perf_counter() - started
+    started = time.perf_counter()
+    warmed = tasks.prewarm()
+    warmup = time.perf_counter() - started
+
+
+    # One --page-range for the set, cut to each document's own pages.
+    per_doc = {}
+    for f in files:
+        doc_opts = dict(opts)
+        if opts.get("page_range"):
+            total = _pages(f)
+            if total is not None:
+                clamped = _clamp(opts["page_range"], total)
+                if clamped is None:
+                    doc_opts = None
+                else:
+                    doc_opts["page_range"] = clamped
+        per_doc[f] = doc_opts
 
     docs, failed = [], 0
     for run in range(1, args.runs + 1):
         for f in files:
             t0 = time.perf_counter()
             try:
-                tasks.convert_document(f, opts)
+                if per_doc[f] is None:
+                    raise ValueError(f"--page-range {opts['page_range']} is past the end of this document")
+                tasks.convert_document(f, per_doc[f])
                 ok, error = True, None
             except Exception as exc:  # noqa: BLE001
                 ok, error = False, f"{type(exc).__name__}: {exc}"
                 failed += 1
-            docs.append({"file": os.path.basename(f), "run": run, "pages": _pages(f),
+            pages, kind = facts[f]
+            docs.append({"file": os.path.basename(f), "run": run, "pages": pages, "path": kind,
                          "seconds": round(time.perf_counter() - t0, 3), "ok": ok, "error": error})
 
+    # The overhead's warm half, after the timed runs so none of them is served
+    # a page from llama-server's prompt cache: the same page 0, here, warm,
+    # once - straight after a different OCR'd page (prewarm's), so it is not
+    # served from that cache either. Cold minus warm is the overhead.
+    for kind, pick in picks.items():
+        tasks.prewarm()
+        page0 = dict(opts, page_range="0", output_dir=os.path.join(out_dir, f"warm-{kind}"))
+        t0 = time.perf_counter()
+        tasks.convert_document(pick, page0)
+        overhead[kind] = _overhead(cold[kind], time.perf_counter() - t0)
+
     good = [d for d in docs if d["ok"]]
-    seconds = sum(d["seconds"] for d in good)
-    pages = sum(d["pages"] or 0 for d in good)
-    per_doc = seconds / len(good) if good else None
+    warm = {kind: _path_summary([d for d in good if d["path"] == kind])
+            for kind in ("text", "ocr", None) if any(d["path"] == kind for d in good)}
+    warm = {(k or "unknown"): v for k, v in warm.items()}
+
+    # Per document: its mean warm time against its own path's overhead.
+    saving = []
+    for name in dict.fromkeys(d["file"] for d in good):
+        runs = [d for d in good if d["file"] == name]
+        mean = sum(d["seconds"] for d in runs) / len(runs)
+        kind = runs[0]["path"]
+        over = (overhead.get(kind) or {}).get("seconds")
+        entry = {
+            "file": name, "path": kind, "warm_seconds": round(mean, 3),
+            "overhead_seconds": over,
+            "cli_seconds": round(over + mean, 3) if over is not None else None,
+            "speedup": round((over + mean) / mean, 2) if over is not None and mean else None,
+        }
+        # A text-layer document whose tables are OCR'd starts llama-server too,
+        # and so pays up to the OCR path's overhead; page 0 cannot show that.
+        ocr_over = (overhead.get("ocr") or {}).get("seconds")
+        if kind == "text" and ocr_over is not None and mean:
+            entry["speedup_if_its_tables_are_ocrd"] = round((ocr_over + mean) / mean, 2)
+        saving.append(entry)
+
     report = {
         "schema": BENCH_SCHEMA,
         "measured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": _host(),
         "versions": tool_versions(),
+        "options": {"page_range": opts.get("page_range"), "force_ocr": bool(args.force_ocr),
+                    "runs": args.runs},
+        "llama_server_extra_args": llama_args,
+        # What a per-file CLI pays on every file, measured; a resident worker pays it once.
+        "overhead": overhead,
+        # Inside this process, for reference - NOT the overhead: get_models()
+        # loads the layout model only, and prewarm() includes one page of work.
         "model_load_seconds": round(load, 3),
+        "warmup_seconds": round(warmup, 3) if warmed is not None else None,
         "documents": docs,
-        "warm": {
-            "documents": len(good),
-            "pages": pages,
-            "seconds": round(seconds, 3),
-            "seconds_per_document": round(per_doc, 3) if per_doc else None,
-            "seconds_per_page": round(seconds / pages, 3) if pages else None,
-            "pages_per_minute": round(pages * 60 / seconds, 2) if pages and seconds else None,
-        },
-        # What a per-file CLI pays on every file and a resident worker pays once.
-        "resident_saving": {
-            "per_document_seconds": round(load, 3),
-            "cli_per_document_seconds": round(load + per_doc, 3) if per_doc else None,
-            "speedup": round((load + per_doc) / per_doc, 2) if per_doc else None,
-        },
+        "warm": warm,
+        "resident_saving": saving,
+        "notes": [
+            "overhead = page 0 in a fresh process (after one priming run) minus the same page in this "
+            "warm one; a container per file adds its own start on top",
+            "overhead[text] is for pages needing no OCR at all; a text-layer document whose tables are "
+            "OCR'd starts llama-server and pays up to overhead[ocr] - hence speedup_if_its_tables_are_ocrd",
+            "llama-server ran with " + (llama_args or "no extra arguments") + ": pages are converted, "
+            "never recalled from its prompt cache",
+        ],
     }
     text = json.dumps(report, indent=2)
     print(text)
@@ -170,7 +417,6 @@ def cmd_bench(args) -> int:
     if failed:
         return EX_FAILED
     return EX_NO_INPUT if missing else EX_OK
-
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="cli.py", description=__doc__.splitlines()[0])
@@ -185,10 +431,14 @@ def main(argv=None) -> int:
     conv.add_argument("files", nargs="+")
     conv.set_defaults(func=cmd_convert)
 
-    bench = sub.add_parser("bench", help="time the model load and each conversion")
+    bench = sub.add_parser("bench", help="measure the per-file overhead and each conversion")
     bench.add_argument("--output-dir", help="where conversions go (default: a temp folder)")
     bench.add_argument("--runs", type=int, default=1, help="convert the set this many times")
     bench.add_argument("--report", help="also write the JSON report here")
+    bench.add_argument("--page-range", help="convert only these pages of every document")
+    bench.add_argument("--force-ocr", action="store_true", help="OCR every page (the OCR path, on purpose)")
+    bench.add_argument("--no-cold", action="store_true",
+                       help="skip measuring the per-file overhead (two fresh-process conversions per path)")
     bench.add_argument("files", nargs="+")
     bench.set_defaults(func=cmd_bench)
 

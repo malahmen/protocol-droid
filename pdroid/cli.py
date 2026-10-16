@@ -43,8 +43,10 @@ CONTAINER — marker from the service image, run once on local files. Nothing is
   installed on this host; the models download once into a named volume.
   build                                       build the image (same as service build)
   convert [--output-format F] [--output-dir D] [--page-range R] [--force-ocr] PATH...
-  bench [--runs N] [--report FILE] PATH...    time the model load vs each document;
-                                              writes a JSON report (default ./marker-bench-<host>-<time>.json)
+  bench [--runs N] [--report FILE] [--page-range R] [--force-ocr] [--no-cold] PATH...
+                                              the per-file overhead (measured) vs each warm document,
+                                              per path (text / OCR); a JSON report (default
+                                              ./marker-bench-<host>-<time>.json)
   status                                      image and model cache
   --runtime podman|docker (default: podman if present, else docker; or PROTOCOL_DROID_RUNTIME)
 
