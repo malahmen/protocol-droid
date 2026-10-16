@@ -37,6 +37,8 @@ spec:
       #     effect: "NoSchedule"
       containers:
         - name: worker
+          # `service deploy` pins this to the build's ID (marker-service:<id>), so a
+          # rebuild rolls the pods; applied by hand, :latest needs a rollout restart.
           image: marker-service:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "worker.py"]

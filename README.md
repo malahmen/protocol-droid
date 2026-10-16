@@ -373,8 +373,14 @@ curl -s -H "authorization: Bearer $PROTOCOL_DROID_TOKEN" localhost:8000/jobs/<jo
 
 The `k8s/` manifests deploy into the `marker` namespace (`marker-api` /
 `marker-worker`, backed by `marker-input` / `marker-output` / `marker-models`
-PVCs). The image is not published anywhere — make `marker-service:latest`
-reachable by the cluster yourself (registry push, or `kind load docker-image`).
+PVCs). The image is not published anywhere, so make it reachable by the
+cluster yourself (registry push, or `kind load docker-image`). `service build`
+also tags each build with its image ID (`marker-service:<id>`) and `service
+deploy` applies the manifests pinned to that tag, so a rebuild is a new pod
+spec and rolls out - with plain `:latest` and `IfNotPresent` the pods kept
+the old image. Load the tag `deploy` names. Without docker on the deploying
+machine the ID cannot be read: `:latest` is applied and it says how to roll
+by hand.
 
 **Storage on Kubernetes.** Two settings, read by `service deploy --target k8s`
 from the environment or `.env` (the environment wins):
