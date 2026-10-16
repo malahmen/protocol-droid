@@ -1,7 +1,9 @@
 name: ci
 
-# Stdlib only: the suite imports tasks.py directly and never loads marker,
-# fastapi or redis, so it needs no services and no heavy dependencies.
+# `test` is stdlib only: the suite imports tasks.py directly and never loads
+# marker, fastapi or redis, so it needs no services and no heavy dependencies.
+# `markitdown-image` builds the one image small enough to build here and
+# converts a document of each format in it; marker's (6.8 GB) is not built.
 on:
   push:
     branches: [main]
@@ -48,3 +50,24 @@ jobs:
           tests/test-k8s-storage.sh
           tests/test-container.sh
 
+
+  markitdown-image:
+    # The light image protocol runs for its markitdown queue (Dockerfile.
+    # markitdown). Unlike marker's, it is small enough to build here (~430 MB),
+    # so a markitdown bump that breaks a reader fails this job rather than a
+    # conversion in protocol. Its own job: the stdlib suite above must not wait
+    # on a pip install of the extras.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build
+        run: docker build -f Dockerfile.markitdown -t markitdown-service:ci .
+
+      - name: what is installed
+        run: docker run --rm markitdown-service:ci
+
+      - name: one document of each format, network off
+        # The documents are generated inside the image; --network=none is part
+        # of the check: the worker converts what it is handed and fetches nothing.
+        run: docker run --rm -i --network=none markitdown-service:ci python - < tests/markitdown_image_check.py

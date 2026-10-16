@@ -574,11 +574,17 @@ path outside the root or with no root at all.
   the runner and the workstation disagree about what passes.
 - `python3 -m unittest discover -s tests -v`.
 - `tests/test-exit-codes.sh`, `tests/test-k8s-storage.sh`, `tests/test-container.sh`.
+- a second job, `markitdown-image`: builds `Dockerfile.markitdown` and runs
+  `tests/markitdown_image_check.py` in it with the network off - one generated
+  DOCX, EPUB, PPTX, XLSX, HTML and CSV through the port protocol calls.
 
-Neither backend is installed in CI. `marker` needs several GB of model
-weights and `markitdown` needs ffmpeg, and a conversion is only meaningfully
-checked by converting something — so the suite deliberately covers the logic
-that decides *what* to convert rather than the conversion.
+`marker` is not installed in CI: it needs several GB of model weights, and a
+conversion is only meaningfully checked by converting something - so the
+suite covers the logic that decides *what* to convert rather than marker's
+conversion. markitdown is the exception because its image is small: built
+without the audio extra, it needs no ffmpeg, and converting one document of
+each format takes seconds. A markitdown bump that breaks a reader fails that
+job, naming the format.
 
 ## License
 
