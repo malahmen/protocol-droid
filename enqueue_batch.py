@@ -15,6 +15,7 @@ import argparse
 import os
 
 from rq import Queue
+from rq.serializers import JSONSerializer
 
 import tasks
 
@@ -38,7 +39,9 @@ def main():
 
     result_ttl = int(os.environ.get("RESULT_TTL", "86400"))
     conn = tasks.redis_connection()
-    queue = Queue(os.environ.get("MARKER_QUEUE", "marker"), connection=conn)
+    # JSON jobs naming tasks.JOB_FUNC, as the API enqueues: worker.py runs nothing else.
+    queue = Queue(os.environ.get("MARKER_QUEUE", "marker"), connection=conn,
+                  serializer=JSONSerializer)
 
     input_root = os.path.realpath(args.input_dir)
     count = 0
@@ -54,7 +57,7 @@ def main():
                 opts["force_ocr"] = True
             # input_root: the output mirrors the tree under input_dir, so files
             # with the same name in different folders don't overwrite each other.
-            queue.enqueue(tasks.convert_document, path, opts, input_root=input_root,
+            queue.enqueue(tasks.JOB_FUNC, path, opts, input_root=input_root,
                           job_timeout=tasks.job_timeout(path, opts),
                           result_ttl=result_ttl, failure_ttl=result_ttl)
             count += 1

@@ -37,6 +37,7 @@ from redis.exceptions import RedisError
 from rq import Queue
 from rq.exceptions import NoSuchJobError
 from rq.job import Job
+from rq.serializers import JSONSerializer
 
 import tasks
 
@@ -84,7 +85,8 @@ def openapi_schema():
 def docs():
     return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title)
 _conn = tasks.redis_connection(REDIS_URL)
-_queue = Queue(QUEUE_NAME, connection=_conn)
+# JSON, never pickle, and jobs name tasks.JOB_FUNC: worker.py refuses anything else.
+_queue = Queue(QUEUE_NAME, connection=_conn, serializer=JSONSerializer)
 
 
 class JobIn(BaseModel):
@@ -144,7 +146,7 @@ def enqueue(body: JobIn):
 
     try:
         # Sized per job, not one queue-wide number: see tasks.job_timeout.
-        job = _queue.enqueue(tasks.convert_document, path, opts, input_root=INPUT_DIR,
+        job = _queue.enqueue(tasks.JOB_FUNC, path, opts, input_root=INPUT_DIR,
                              job_timeout=tasks.job_timeout(path, opts),
                              result_ttl=RESULT_TTL, failure_ttl=RESULT_TTL)
     except RedisError:
@@ -155,7 +157,7 @@ def enqueue(body: JobIn):
 @app.get("/jobs/{job_id}")
 def job_status(job_id: str):
     try:
-        job = Job.fetch(job_id, connection=_conn)
+        job = Job.fetch(job_id, connection=_conn, serializer=JSONSerializer)
     except NoSuchJobError:
         raise HTTPException(404, "job not found")
     except RedisError:

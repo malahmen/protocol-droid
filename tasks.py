@@ -15,6 +15,14 @@ import time
 # execution modes all emit the SAME sidecar from the same code.
 from provenance import PROVENANCE_FILE, provenance_record, write_provenance
 
+# The one job the service's queue carries (Kamino item 78). An RQ job names a
+# function by import path and the worker calls it, so by default anything that
+# can write to Redis can run any importable function in a worker - shown
+# 2026-10-16 with a job naming os.system, which ran pickled *and* as JSON. So
+# the API and enqueue_batch.py enqueue this name with JSON arguments, and
+# worker.py refuses any job that names anything else (see GuardedWorker).
+JOB_FUNC = "tasks.convert_document"
+
 # Match marker's CLI environment (quiet gRPC/glog, MPS fallback for Macs).
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GLOG_minloglevel", "2")
