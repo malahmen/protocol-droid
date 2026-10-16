@@ -209,8 +209,11 @@ writes a JSON report (`--report FILE`, default `./marker-bench-<host>-<time>.jso
   under the input root, with the extension kept in the folder name:
   `/data/input/a/report.pdf` → `/data/output/a/report_pdf/report.md` (plus its
   images). Files with the same name in different folders, or with different
-  extensions, therefore never overwrite each other. A job's `result` is that
-  folder.
+  extensions, therefore never overwrite each other. A file with no extension
+  (or an underscore in it) gets its full name plus `.d` - `README` →
+  `README.d/` - so it can never share a folder with a look-alike such as
+  `README.md`'s `README_md/`. Only case variants of one extension share a
+  folder (`report.PDF`, `report.pdf`). A job's `result` is that folder.
 - **enqueue_batch.py** — a producer that walks a folder and enqueues every
   supported file in one shot.
 

@@ -57,7 +57,27 @@ class OutputFolder(unittest.TestCase):
         self.assertEqual(self.rel("in/a/report.pdf", None), "report_pdf")
 
     def test_no_extension(self):
-        self.assertEqual(self.rel("in/README"), "README")
+        # The full name plus .d: plain "README" could be "README" with any
+        # extension's folder named after it (item 56).
+        self.assertEqual(self.rel("in/README"), "README.d")
+
+    def test_an_extensionless_name_never_meets_its_lookalike(self):
+        # Item 56: these two shared report_pdf/ and overwrote each other.
+        self.assertEqual(self.rel("in/report.pdf"), "report_pdf")
+        self.assertEqual(self.rel("in/report_pdf"), "report_pdf.d")
+
+    def test_folders_are_one_to_one(self):
+        names = ["report.pdf", "report_pdf", "report_pdf.d", "report_pdf_d", "a_b.c", "a.b_c",
+                 "README", "README.d", ".hidden", "x.tar_gz", "x.tar", "x_tar.gz", "doc.docx",
+                 "doc_docx", "doc.d", "doc"]
+        folders = [self.rel(f"in/{n}") for n in names]
+        self.assertEqual(len(set(folders)), len(names), msg=dict(zip(names, folders)))
+
+    def test_the_one_collision_kept_on_purpose(self):
+        # The extension is lowercased, so case variants still share a folder;
+        # a scanner's SCAN0001.PDF keeps the folder it always had.
+        self.assertEqual(self.rel("in/SCAN0001.PDF"), "SCAN0001_pdf")
+        self.assertEqual(self.rel("in/report.PDF"), self.rel("in/report.pdf"))
 
 
 if __name__ == "__main__":
