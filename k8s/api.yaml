@@ -33,6 +33,8 @@ spec:
         fsGroup: 1000
       containers:
         - name: api
+          # `service deploy` pins this to the build's ID (marker-service:<id>), so a
+          # rebuild rolls the pods; applied by hand, :latest needs a rollout restart.
           image: marker-service:latest
           imagePullPolicy: IfNotPresent
           command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]

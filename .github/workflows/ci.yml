@@ -71,3 +71,35 @@ jobs:
         # The documents are generated inside the image; --network=none is part
         # of the check: the worker converts what it is handed and fetches nothing.
         run: docker run --rm -i --network=none markitdown-service:ci python - < tests/markitdown_image_check.py
+
+  api-and-queue:
+    # The service's API and queue code, which the stdlib job above cannot
+    # import: fastapi and rq, from requirements-ci.txt - not marker, which
+    # drags torch and several GB of models. The suite is the same; here the
+    # checks that skip above run - the guarded worker's against a throwaway
+    # Redis 7, which the suite flushes.
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install
+        run: python3 -m pip install -r requirements-ci.txt
+
+      - name: tests
+        env:
+          PROTOCOL_DROID_TEST_REDIS_URL: redis://localhost:6379/14
+        run: python3 -m unittest discover -s tests -v

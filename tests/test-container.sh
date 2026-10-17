@@ -30,7 +30,7 @@ case "${1:-} ${2:-}" in
     "volume inspect") exit 1 ;;
     build*)           : > "$STUB_BUILT" ;;
     "run "*)          # bench prints its report on stdout
-                      for a in "$@"; do [[ "$a" == bench ]] && echo '{"schema": "protocol-droid/bench/1"}'; done
+                      for a in "$@"; do [[ "$a" == bench ]] && echo '{"schema": "protocol-droid/bench/2"}'; done
                       exit "${STUB_RUN_RC:-0}" ;;
     *)                exit 0 ;;
 esac
@@ -87,8 +87,13 @@ run container bench --runtime docker --runs 2 --report "$T/report.json" "$T/docs
 args
 check "bench runs cli.py bench with the runs" has "bench" "$T/args"
 check "  --runs 2" has "2" "$T/args"
-check "the report is written on the host" has "protocol-droid/bench/1" "$T/report.json"
+check "the report is written on the host" has "protocol-droid/bench/2" "$T/report.json"
 check "the host's name goes in, not the container's" has "BENCH_HOST=" "$T/args"
+run container bench --runtime docker --page-range 0-4 --force-ocr --no-cold "$T/docs/a.pdf"
+args
+check "--page-range goes through to the image" has "0-4" "$T/args"
+check "  and --force-ocr" has "--force-ocr" "$T/args"
+check "  and --no-cold" has "--no-cold" "$T/args"
 run container bench --runtime docker --runs 0 "$T/docs/a.pdf"
 check "--runs must be positive" has "--runs must be a positive number" "$T/out"
 

@@ -156,7 +156,7 @@ def convert(args, rt="") -> int:
 
 
 def bench(args, rt="") -> int:
-    runs, report, paths = "1", "", []
+    runs, report, paths, extra = "1", "", [], []
     i = 0
     while i < len(args):
         a = args[i]
@@ -164,6 +164,10 @@ def bench(args, rt="") -> int:
             runs = args[i + 1]; i += 2
         elif a == "--report":
             report = args[i + 1]; i += 2
+        elif a == "--page-range":
+            extra += ["--page-range", args[i + 1]]; i += 2
+        elif a in ("--force-ocr", "--no-cold"):
+            extra.append(a); i += 1
         elif a.startswith("-"):
             error_exit(f"container bench: unknown flag {a}")
         else:
@@ -179,12 +183,13 @@ def bench(args, rt="") -> int:
         error_exit("nothing to measure.")
     host = _host()
     report = report or f"./marker-bench-{host}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json"
-    info(f"bench: {len(files)} document(s) × {runs} run(s) on {host} ({rt}) - the first run also downloads the models")
+    info(f"bench: {len(files)} document(s) × {runs} run(s) on {host} ({rt}) - the per-file overhead is "
+         "measured first, in fresh processes (--no-cold skips it); a first-ever run also downloads the models")
     # The report is the container's stdout, written here on the host: no
     # folder of the caller's has to be writable from inside.
     with open(report, "w", encoding="utf-8") as fh:
         rc = c.run([rt, *base_args(rt), *mount_args("", files), IMAGE,
-                    "python", "cli.py", "bench", "--runs", runs, *files], stdout=fh)
+                    "python", "cli.py", "bench", "--runs", runs, *extra, *files], stdout=fh)
     if os.path.getsize(report) > 0:
         success(f"Report: {report}")
     else:

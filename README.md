@@ -157,28 +157,40 @@ conversion writes the same folders and the same provenance sidecar as a queued o
 protocol-droid.sh container build                         # the image (same as `service build`)
 protocol-droid.sh container convert ./docs                # folders, files, or both -> ./converted
 protocol-droid.sh container convert --output-format json --page-range 0-4 report.pdf
-protocol-droid.sh container bench ./sample-pdfs           # time the model load vs each document
+protocol-droid.sh container bench ./sample-pdfs           # the per-file overhead vs each warm document
 protocol-droid.sh container status
 ```
 
 - Each input's folder is mounted **read-only** and the output folder read-write, **at their own paths**, so no path is rewritten.
 - The models download once into the named volume `protocol-droid-models` (`PROTOCOL_DROID_MODELS_VOLUME`), not per run.
 - `--runtime podman|docker` (default: podman if present). On rootless podman the caller is mapped onto the image's `app` user, so outputs belong to the caller; docker on Linux writes them as uid 1000 and says so.
-- markitdown is not in the image - it is a pip package with no models, and `local --backend markitdown` already isolates it.
+- markitdown is not in this image - it is a pip package with no models. It has a small image of its own (`Dockerfile.markitdown`, see "protocol's converter port" below), and `local --backend markitdown` isolates it on the host.
 
-**`bench`** answers the question the converter-services report could only reason
-about: what does keeping marker's models resident save? It loads the models
-once, timed on their own, then converts each document, timed one by one, and
-writes a JSON report (`--report FILE`, default `./marker-bench-<host>-<time>.json`):
+**`bench`** measures what keeping marker resident saves, per document, and
+what each kind of page costs. Report schema `protocol-droid/bench/2`, written
+as JSON (`--report FILE`, default `./marker-bench-<host>-<time>.json`).
+
+The first version timed only the model load (3.6 s on corelia) as the
+overhead, where a per-file run really pays several times that, and on that it
+gave a wrong answer to a gating decision (Kamino item 64); and it averaged
+text-layer and OCR pages, which differ ~18x (item 65). Now:
 
 | Field | Means |
 | --- | --- |
-| `model_load_seconds` | what every per-file CLI run pays, and a resident worker pays once |
-| `warm.seconds_per_document`, `warm.seconds_per_page`, `warm.pages_per_minute` | throughput once the models are loaded |
-| `resident_saving.speedup` | (load + per-document) / per-document: how much faster a resident worker is per file |
-| `host`, `versions` | where it ran (the host's name, CPUs visible, torch threads and device) and marker / surya / torch versions |
+| `overhead.ocr`, `overhead.text` | **Measured** per path: page 0 of one PDF in a fresh process (after a priming run, which pays for reading the models from disk) minus the same page in the warm bench process. What a per-file CLI pays per file and a resident worker pays once. `seconds: null` with a `why` where the samples cannot show it - never a guess |
+| `warm.text`, `warm.ocr` | Throughput once warm, **per path, never blended**: pages, seconds, `seconds_per_page`, `pages_per_minute` |
+| `resident_saving[]` | Per document: its warm time, its path's overhead, and the speedup a resident worker gives it. A text-layer document also gets `speedup_if_its_tables_are_ocrd`: OCR'd tables start llama-server, so it may pay up to the OCR overhead |
+| `model_load_seconds`, `warmup_seconds` | Inside the bench process, for reference - not the overhead |
+| `llama_server_extra_args` | `--no-cache-prompt`: llama-server otherwise serves a page it has seen from its prompt cache (3.0 s against 15.1 s), which would make `--runs` and the overhead's warm sample time recall instead of conversion. Pages it has not seen take the same time either way |
 
-`--runs N` converts the set N times. The first run on a machine also downloads the models; run it twice and read the second report.
+On corelia (marker 2.0.0, 32 CPUs, no GPU, 2026-10-16): overhead **17.0 s** on the
+OCR path and **5.1 s** on a text layer; OCR at ~58 s/page.
+
+`--page-range R` converts only those pages of every document (cut to each
+document's length), which keeps a run on a scanned book to minutes;
+`--force-ocr` OCRs every page, to measure that path on purpose; `--runs N`
+repeats the set; `--no-cold` skips the overhead (it costs three fresh-process
+conversions per path). The first run on a machine also downloads the models.
 
 ### Service mode (containerized, scalable)
 
@@ -209,8 +221,11 @@ writes a JSON report (`--report FILE`, default `./marker-bench-<host>-<time>.jso
   under the input root, with the extension kept in the folder name:
   `/data/input/a/report.pdf` → `/data/output/a/report_pdf/report.md` (plus its
   images). Files with the same name in different folders, or with different
-  extensions, therefore never overwrite each other. A job's `result` is that
-  folder.
+  extensions, therefore never overwrite each other. A file with no extension
+  (or an underscore in it) gets its full name plus `.d` - `README` →
+  `README.d/` - so it can never share a folder with a look-alike such as
+  `README.md`'s `README_md/`. Only case variants of one extension share a
+  folder (`report.PDF`, `report.pdf`). A job's `result` is that folder.
 - **enqueue_batch.py** — a producer that walks a folder and enqueues every
   supported file in one shot.
 
@@ -360,6 +375,13 @@ curl -s -H "authorization: Bearer $PROTOCOL_DROID_TOKEN" localhost:8000/jobs/<jo
   Cilium, kindnet in kind ≥ 0.24); AUTH applies either way. Applying the
   manifests by hand: `kubectl -n marker create secret generic marker-redis
   --from-literal=password="$(openssl rand -hex 24)"` first.
+- **The queue carries data, never code.** An RQ job names a function and the
+  worker calls it, so a plain worker runs whatever a job in Redis names - a job
+  naming `os.system` ran, pickled or as JSON. Jobs here are JSON and name
+  `tasks.convert_document` only, and the worker (`GuardedWorker`) refuses any
+  job that names anything else, passes anything but a path and an options dict,
+  or carries a callback - without running it. Jobs queued before this change
+  were pickled and are refused the same way: re-enqueue them.
 - **Path confinement.** `path` must resolve (after symlinks and `..`) under
   `/data/input` and `output_dir` under `/data/output`; anything else is `400`.
   Workers therefore only ever read the input mount and write the output mount.
@@ -370,8 +392,14 @@ curl -s -H "authorization: Bearer $PROTOCOL_DROID_TOKEN" localhost:8000/jobs/<jo
 
 The `k8s/` manifests deploy into the `marker` namespace (`marker-api` /
 `marker-worker`, backed by `marker-input` / `marker-output` / `marker-models`
-PVCs). The image is not published anywhere — make `marker-service:latest`
-reachable by the cluster yourself (registry push, or `kind load docker-image`).
+PVCs). The image is not published anywhere, so make it reachable by the
+cluster yourself (registry push, or `kind load docker-image`). `service build`
+also tags each build with its image ID (`marker-service:<id>`) and `service
+deploy` applies the manifests pinned to that tag, so a rebuild is a new pod
+spec and rolls out - with plain `:latest` and `IfNotPresent` the pods kept
+the old image. Load the tag `deploy` names. Without docker on the deploying
+machine the ID cannot be read: `:latest` is applied and it says how to roll
+by hand.
 
 **Storage on Kubernetes.** Two settings, read by `service deploy --target k8s`
 from the environment or `.env` (the environment wins):
@@ -524,12 +552,15 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
 | `tests/test_provenance.py` | 34 | what the sidecar records, what it redacts, and its script interface |
 | `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
-| `tests/test_cli.py` | 11 | the container entry: `bench`'s arithmetic (load timed apart, the resident saving), `convert`'s batch and exit codes - marker replaced, never loaded |
+| `tests/test_cli.py` | 29 | the container entry: `bench`'s measurements (the overhead cold minus warm and its order, per-path throughput, per-document saving, page ranges cut per document, prompt recall off), `convert`'s batch and exit codes - marker replaced, never loaded |
 | `tests/test-container.sh` | 23 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host |
 | `tests/test-k8s-storage.sh` | 22 | the volume claims `service deploy --target k8s` renders: access mode and storage class from the environment or `.env` |
 | `tests/test_job_timeout.py` | 18 | each job's timeout sized from its pages (a 166-page scan no longer killed at an hour), and the worker's warm-up |
 | `tests/test_convert_bytes.py` | 9 | marker at protocol's port: bytes in, files out, the sidecar kept out, no path from the name |
 | `tests/test_markitdown_tasks.py` | 10 | markitdown at protocol's port, and `port.py`: `convert_local` only, plugins off, no options |
+| `tests/test_api.py` | 7 | what the API refuses before anything is queued (a folder, a missing file), and its docs behind the token - needs fastapi and rq (`requirements-ci.txt`) |
+| `tests/test_worker_guard.py` | 8 | the worker runs only `tasks.convert_document`: five kinds of hostile job refused, against a real Redis (`PROTOCOL_DROID_TEST_REDIS_URL`) |
+| `tests/test_k8s_image.py` | 10 | `service deploy --target k8s` pins the image to its build ID, so a rebuild rolls out |
 | `tests/test_engine.py` | 9 | the folder scanner, output naming and exit-code severity, pinned to v1.0.0's bash answers |
 
 `tests/test-exit-codes.sh` is the one that would have caught this round's bugs:

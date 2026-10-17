@@ -15,6 +15,14 @@ import time
 # execution modes all emit the SAME sidecar from the same code.
 from provenance import PROVENANCE_FILE, provenance_record, write_provenance
 
+# The one job the service's queue carries (Kamino item 78). An RQ job names a
+# function by import path and the worker calls it, so by default anything that
+# can write to Redis can run any importable function in a worker - shown
+# 2026-10-16 with a job naming os.system, which ran pickled *and* as JSON. So
+# the API and enqueue_batch.py enqueue this name with JSON arguments, and
+# worker.py refuses any job that names anything else (see GuardedWorker).
+JOB_FUNC = "tasks.convert_document"
+
 # Match marker's CLI environment (quiet gRPC/glog, MPS fallback for Macs).
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GLOG_minloglevel", "2")
@@ -368,6 +376,16 @@ def output_folder(fpath: str, output_dir: str, input_root: str | None = None) ->
     `input_root`) and keeping the extension in the folder name gives every input
     its own folder. Without `input_root`, or for a path outside it, only the
     file name is used.
+
+    `<stem>_<ext>` alone was not one-to-one: report.pdf and an extensionless
+    report_pdf both became report_pdf/ and overwrote each other (Kamino item
+    56). So that form is kept only where it can be read back - an extension
+    with no underscore in it - and every other name (no extension, or one like
+    `.tar_gz`) gets its full name plus `.d`. The two forms cannot meet: after
+    the last underscore, `<stem>_<ext>` has no dot, and `<name>.d` always has
+    one. The one collision left on purpose: the extension is lowercased, so
+    report.PDF and report.pdf in one folder still share an output folder -
+    scanners name files .PDF, and their folders stay as they were.
     """
     name = os.path.basename(fpath)
     rel_dir = ""
@@ -380,7 +398,8 @@ def output_folder(fpath: str, output_dir: str, input_root: str | None = None) ->
             if rel_dir == os.curdir:
                 rel_dir = ""
     stem, ext = os.path.splitext(name)
-    folder = f"{stem}_{ext[1:].lower()}" if ext else stem
+    ext = ext[1:]
+    folder = f"{stem}_{ext.lower()}" if ext and "_" not in ext else f"{name}.d"
     out = os.path.join(output_dir, rel_dir, folder)
     os.makedirs(out, exist_ok=True)
     return out

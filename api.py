@@ -31,11 +31,13 @@ import os
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel
 from redis.exceptions import RedisError
 from rq import Queue
 from rq.exceptions import NoSuchJobError
 from rq.job import Job
+from rq.serializers import JSONSerializer
 
 import tasks
 
@@ -65,9 +67,26 @@ def confine(path: str, root: str, what: str) -> str:
     return real
 
 
-app = FastAPI(title="protocol-droid conversion API", dependencies=[Depends(require_token)])
+# FastAPI serves /docs, /redoc and /openapi.json outside the app's
+# dependencies, so with a token set they still answered anyone. They are
+# turned off and the schema and docs served as ordinary routes, which the
+# token check covers like every other; with no token the API is open, and so
+# are they. /redoc is dropped: /docs is enough.
+app = FastAPI(title="protocol-droid conversion API", dependencies=[Depends(require_token)],
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_schema():
+    return app.openapi()
+
+
+@app.get("/docs", include_in_schema=False)
+def docs():
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title)
 _conn = tasks.redis_connection(REDIS_URL)
-_queue = Queue(QUEUE_NAME, connection=_conn)
+# JSON, never pickle, and jobs name tasks.JOB_FUNC: worker.py refuses anything else.
+_queue = Queue(QUEUE_NAME, connection=_conn, serializer=JSONSerializer)
 
 
 class JobIn(BaseModel):
@@ -91,6 +110,11 @@ def healthz():
 @app.post("/jobs")
 def enqueue(body: JobIn):
     path = confine(body.path, INPUT_DIR, "path")
+    # One document per job: a folder (enqueue_batch.py walks those) or a path
+    # that does not exist was accepted here and failed later in the worker,
+    # costing a queue slot and a worker's time to say what this can say now.
+    if not os.path.isfile(path):
+        raise HTTPException(400, "path must be an existing file (a folder: use enqueue_batch.py)")
     output_dir = confine(body.output_dir or OUTPUT_DIR, OUTPUT_DIR, "output_dir")
     # Both are rejected here with a 400 rather than left for the worker.
     # output_format reached marker unchecked and failed the job; page_range
@@ -122,7 +146,7 @@ def enqueue(body: JobIn):
 
     try:
         # Sized per job, not one queue-wide number: see tasks.job_timeout.
-        job = _queue.enqueue(tasks.convert_document, path, opts, input_root=INPUT_DIR,
+        job = _queue.enqueue(tasks.JOB_FUNC, path, opts, input_root=INPUT_DIR,
                              job_timeout=tasks.job_timeout(path, opts),
                              result_ttl=RESULT_TTL, failure_ttl=RESULT_TTL)
     except RedisError:
@@ -133,7 +157,7 @@ def enqueue(body: JobIn):
 @app.get("/jobs/{job_id}")
 def job_status(job_id: str):
     try:
-        job = Job.fetch(job_id, connection=_conn)
+        job = Job.fetch(job_id, connection=_conn, serializer=JSONSerializer)
     except NoSuchJobError:
         raise HTTPException(404, "job not found")
     except RedisError:

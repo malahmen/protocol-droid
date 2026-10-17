@@ -165,6 +165,63 @@ def verify_image_ocr() -> bool:
     return False
 
 
+# --- the image k8s runs -------------------------------------------------------
+#
+# The manifests name marker-service:latest with imagePullPolicy IfNotPresent,
+# and the image reaches the cluster by hand (kind load, or a push). So after a
+# rebuild nothing in the pod spec changed: `kubectl apply` rolled nothing out,
+# running pods kept the old image, and a node that already had a :latest never
+# looked again (Kamino item 55). `Always` is no fix -
+# there is no registry to pull from.
+#
+# So every build is also tagged with its image ID, and deploy renders the
+# manifests with that tag: a new build is a new spec, the pods roll, and
+# IfNotPresent becomes exactly right - an immutable tag never needs pulling
+# twice. Without docker here the ID cannot be read, and :latest is applied with
+# a warning saying how to roll by hand.
+_LATEST_LINE = f"image: {IMAGE}"
+
+
+def image_tag() -> str | None:
+    """marker-service:<first 12 hex of the image ID>, or None if it cannot be read."""
+    if not shutil.which("docker"):
+        return None
+    res = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE],
+                         capture_output=True, text=True)
+    image_id = res.stdout.strip().split(":")[-1]
+    if res.returncode != 0 or not re.fullmatch(r"[0-9a-f]{12,}", image_id):
+        return None
+    return f"{IMAGE.rsplit(':', 1)[0]}:{image_id[:12]}"
+
+
+def tag_build() -> str | None:
+    """Tag the current :latest with its ID; the tag, or None."""
+    tag = image_tag()
+    if tag and c.run(["docker", "tag", IMAGE, tag]) != 0:
+        return None
+    return tag
+
+
+def render_manifest(path: str, tag: str | None) -> str:
+    """The manifest with every `image: marker-service:latest` pinned to `tag`."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    if tag:
+        if _LATEST_LINE not in text:
+            error_exit(f"{os.path.basename(path)} has no '{_LATEST_LINE}' line to pin.")
+        text = text.replace(_LATEST_LINE, f"image: {tag}")
+    return text
+
+
+def _apply_text(text: str) -> bool:
+    return subprocess.run(["kubectl", "apply", "-f", "-"], input=text, text=True).returncode == 0
+
+
+def _make_available(tag: str | None) -> str:
+    ref = tag or IMAGE
+    return f"Make image '{ref}' available to the cluster (registry push, or 'kind load docker-image {ref}')."
+
+
 def build(target: str) -> int:
     if target == "docker":
         need_docker()
@@ -173,10 +230,11 @@ def build(target: str) -> int:
     info(f"Building {IMAGE} (large: installs marker + torch + deps)...")
     if c.run(["docker", "build", "-t", IMAGE, c.ROOT]) != 0:
         error_exit("Build failed.")
-    success(f"Built {IMAGE}.")
+    tag = tag_build()
+    success(f"Built {IMAGE}" + (f", also tagged {tag}." if tag else "."))
     verify_image_ocr()   # reported, not fatal
     if target == "k8s":
-        info(f"For k8s, make it available to the cluster (registry push, or 'kind load docker-image {IMAGE}').")
+        info("For k8s: " + _make_available(tag))
     return EX_OK
 
 
@@ -208,10 +266,18 @@ def deploy(target: str, input_dir: str, output_dir: str) -> int:
          f"input/output {os.environ.get('K8S_ACCESS_MODE') or 'ReadWriteOnce'}, model cache ReadWriteOnce.")
     if subprocess.run(["kubectl", "apply", "-f", "-"], input=render_pvcs(), text=True).returncode != 0:
         error_exit("kubectl apply (volume claims) failed. An existing claim cannot change class or access mode: delete it first (a Pending one holds no data).")
-    files = [os.path.join(k8s_dir(), f) for f in ("redis.yaml", "networkpolicy.yaml", "api.yaml", "worker.yaml")]
+    files = [os.path.join(k8s_dir(), f) for f in ("redis.yaml", "networkpolicy.yaml")]
     if c.run(["kubectl", "apply"] + [x for f in files for x in ("-f", f)]) != 0:
         error_exit("kubectl apply failed.")
-    success(f"Applied. Make image '{IMAGE}' available to the cluster (registry push or 'kind load').")
+    tag = tag_build()
+    if not tag:
+        warn(f"Cannot read {IMAGE}'s ID here (no docker, or not built), so it is applied as :latest - "
+             f"after loading a new build, roll it by hand: kubectl -n {K8S_NS} rollout restart "
+             "deploy/marker-api deploy/marker-worker")
+    for f in ("api.yaml", "worker.yaml"):
+        if not _apply_text(render_manifest(os.path.join(k8s_dir(), f), tag)):
+            error_exit(f"kubectl apply ({f}) failed.")
+    success("Applied. " + _make_available(tag))
     info(f"Reach the API: kubectl -n {K8S_NS} port-forward svc/marker-api 8000:8000")
     return EX_OK
 
@@ -267,7 +333,7 @@ def enqueue(target: str, directory: str) -> int:
     info("Ensure your documents are on the 'marker-input' PVC first (e.g. 'kubectl cp').")
     subprocess.call(["kubectl", "-n", K8S_NS, "delete", "job/marker-batch", "--ignore-not-found"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if c.run(["kubectl", "apply", "-f", os.path.join(k8s_dir(), "batch-job.yaml")]) != 0:
+    if not _apply_text(render_manifest(os.path.join(k8s_dir(), "batch-job.yaml"), image_tag())):
         error_exit("Failed to start batch job.")
     success(f"Batch job started — watch: kubectl -n {K8S_NS} logs -f job/marker-batch")
     return EX_OK
