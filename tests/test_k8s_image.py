@@ -124,5 +124,45 @@ class Deploy(unittest.TestCase):
         self.assertTrue(any(m.startswith("WARN") and "rollout restart" in m for m in self.messages))
 
 
+class Enqueue(unittest.TestCase):
+    """service enqueue --target k8s: the batch job runs the workers' image (item 100)."""
+
+    def setUp(self):
+        self.applied, self.messages, self.deployed = [], [], TAG
+        patches = [
+            mock.patch.object(service, "need_kubectl", lambda: None),
+            mock.patch.object(service.subprocess, "call", lambda *a, **k: 0),
+            mock.patch.object(service.subprocess, "run", self.kubectl),
+            mock.patch.object(service, "image_tag", lambda: "marker-service:ffffffffffff"),
+            mock.patch.object(service, "success", self.messages.append),
+            mock.patch.object(service, "info", self.messages.append),
+            mock.patch.object(service, "warn", lambda m: self.messages.append("WARN " + m)),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def kubectl(self, cmd, input=None, **kw):
+        if cmd[:3] == ["kubectl", "apply", "-f"]:
+            self.applied.append(input)
+            return subprocess.CompletedProcess(cmd, 0)
+        if "deploy/marker-worker" in cmd:
+            rc = 0 if self.deployed else 1
+            return subprocess.CompletedProcess(cmd, rc, stdout=(self.deployed or ""), stderr="")
+        raise AssertionError(cmd)
+
+    def test_the_batch_runs_the_deployed_workers_image(self):
+        # This machine's newest build (ffff...) is not what the workers run.
+        service.enqueue("k8s", "/data/input")
+        self.assertIn(f"image: {TAG}", self.applied[0])
+        self.assertNotIn("ffffffffffff", self.applied[0])
+
+    def test_with_no_deployment_it_uses_the_local_build_and_says_so(self):
+        self.deployed = None
+        service.enqueue("k8s", "/data/input")
+        self.assertIn("image: marker-service:ffffffffffff", self.applied[0])
+        self.assertTrue(any(m.startswith("WARN") and "No marker-worker deployment" in m for m in self.messages))
+
+
 if __name__ == "__main__":
     unittest.main()

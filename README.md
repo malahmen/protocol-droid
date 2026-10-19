@@ -380,8 +380,15 @@ curl -s -H "authorization: Bearer $PROTOCOL_DROID_TOKEN" localhost:8000/jobs/<jo
   naming `os.system` ran, pickled or as JSON. Jobs here are JSON and name
   `tasks.convert_document` only, and the worker (`GuardedWorker`) refuses any
   job that names anything else, passes anything but a path and an options dict,
-  or carries a callback - without running it. Jobs queued before this change
-  were pickled and are refused the same way: re-enqueue them.
+  carries a callback, a webhook or a dependency, has a path outside
+  `INPUT_DIR` or an `output_dir` outside `OUTPUT_DIR`, or has an option other
+  than `output_format`, `output_dir`, `use_llm`, `force_ocr`, `page_range` -
+  without running it. marker builds classes named in its options
+  (`processors`, `converter_cls`), so those are refused everywhere, the CLI
+  included. RQ also reaches a job's callbacks and webhooks outside the run
+  (its registry cleanup, and failing a job), so the worker loads jobs as
+  `GuardedJob`, whose callbacks and webhooks do nothing. Jobs queued before
+  this change were pickled and are refused the same way: re-enqueue them.
 - **Path confinement.** `path` must resolve (after symlinks and `..`) under
   `/data/input` and `output_dir` under `/data/output`; anything else is `400`.
   Workers therefore only ever read the input mount and write the output mount.
@@ -559,7 +566,7 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_convert_bytes.py` | 9 | marker at protocol's port: bytes in, files out, the sidecar kept out, no path from the name |
 | `tests/test_markitdown_tasks.py` | 10 | markitdown at protocol's port, and `port.py`: `convert_local` only, plugins off, no options |
 | `tests/test_api.py` | 7 | what the API refuses before anything is queued (a folder, a missing file), and its docs behind the token - needs fastapi and rq (`requirements-ci.txt`) |
-| `tests/test_worker_guard.py` | 8 | the worker runs only `tasks.convert_document`: five kinds of hostile job refused, against a real Redis (`PROTOCOL_DROID_TEST_REDIS_URL`) |
+| `tests/test_worker_guard.py` | 18 | the worker runs only `tasks.convert_document`: hostile jobs refused - another function, a pickled job, callbacks (also one planted in the started registry, which RQ's cleanup reaches), webhooks, marker classes in the options, paths outside the roots - against a real Redis (`PROTOCOL_DROID_TEST_REDIS_URL`) |
 | `tests/test_k8s_image.py` | 10 | `service deploy --target k8s` pins the image to its build ID, so a rebuild rolls out |
 | `tests/test_engine.py` | 9 | the folder scanner, output naming and exit-code severity, pinned to v1.0.0's bash answers |
 

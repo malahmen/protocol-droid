@@ -202,6 +202,17 @@ def tag_build() -> str | None:
     return tag
 
 
+def deployed_image() -> str | None:
+    """The image the marker-worker Deployment runs, as the cluster has it, or None."""
+    res = subprocess.run(["kubectl", "-n", K8S_NS, "get", "deploy/marker-worker", "-o",
+                          "jsonpath={.spec.template.spec.containers[0].image}"],
+                         capture_output=True, text=True)
+    image = (res.stdout or "").strip()
+    if res.returncode != 0 or not image.startswith(IMAGE.rsplit(":", 1)[0] + ":"):
+        return None
+    return image
+
+
 def render_manifest(path: str, tag: str | None) -> str:
     """The manifest with every `image: marker-service:latest` pinned to `tag`."""
     with open(path, encoding="utf-8") as fh:
@@ -333,7 +344,15 @@ def enqueue(target: str, directory: str) -> int:
     info("Ensure your documents are on the 'marker-input' PVC first (e.g. 'kubectl cp').")
     subprocess.call(["kubectl", "-n", K8S_NS, "delete", "job/marker-batch", "--ignore-not-found"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if not _apply_text(render_manifest(os.path.join(k8s_dir(), "batch-job.yaml"), image_tag())):
+    # The image the workers run, not this machine's newest build: a rebuild not
+    # yet deployed has a tag the cluster may not hold (ErrImagePull), and the
+    # batch must enqueue with the code the workers will run (Kamino item 100).
+    tag = deployed_image()
+    if not tag:
+        tag = image_tag()
+        warn(f"No marker-worker deployment to take the image from: the batch job uses "
+             f"{tag or IMAGE}, this machine's build.")
+    if not _apply_text(render_manifest(os.path.join(k8s_dir(), "batch-job.yaml"), tag)):
         error_exit("Failed to start batch job.")
     success(f"Batch job started — watch: kubectl -n {K8S_NS} logs -f job/marker-batch")
     return EX_OK
