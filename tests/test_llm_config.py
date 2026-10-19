@@ -102,14 +102,18 @@ class TestUseLlmThroughValidate(unittest.TestCase):
         self.assertEqual(opts["ollama_base_url"], "http://h:11434")
 
     def test_a_request_cannot_name_the_service_or_the_endpoint(self):
-        # Arbitrary-class import and request forgery, in one assertion: what a
-        # caller sends is overwritten by the deployment's own configuration.
+        # Arbitrary-class import and request forgery: a caller naming the
+        # service or the endpoint is refused outright (item 78, 2026-10-19 -
+        # it used to be overwritten), and use_llm alone still gets the
+        # deployment's own configuration.
         with env(**{**CLEAR, "LLM_SERVICE": "ollama", "LLM_BASE_URL": "http://trusted:11434"}):
-            opts = tasks.validate_options({
-                "use_llm": True,
-                "llm_service": "os.system",
-                "ollama_base_url": "http://attacker.example/",
-            })
+            with self.assertRaises(tasks.InvalidOption):
+                tasks.validate_options({
+                    "use_llm": True,
+                    "llm_service": "os.system",
+                    "ollama_base_url": "http://attacker.example/",
+                })
+            opts = tasks.validate_options({"use_llm": True})
         self.assertEqual(opts["llm_service"], "marker.services.ollama.OllamaService")
         self.assertEqual(opts["ollama_base_url"], "http://trusted:11434")
 

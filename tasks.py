@@ -177,9 +177,27 @@ def llm_config_or_die() -> dict:
     return cfg
 
 
+# The only options any caller here sends (the API, enqueue_batch.py, the CLI,
+# protocol's marker port), with their types. Anything else is refused rather
+# than passed on: marker's ConfigParser takes a dict of its CLI flags, and two
+# of them - processors and converter_cls - name classes it imports and builds
+# (Kamino item 78, reopened 2026-10-19).
+ALLOWED_OPTIONS = {"output_format": str, "output_dir": str, "use_llm": bool,
+                   "force_ocr": bool, "page_range": str}
+
+
 def validate_options(options: dict | None) -> dict:
-    """A copy of `options` with the two caller-supplied knobs checked."""
+    """A copy of `options`, only the allowed keys, each of its type, with the
+    caller-supplied knobs checked."""
+    if options is not None and not isinstance(options, dict):
+        raise InvalidOption("options must be a dict")
     opts = dict(options or {})
+    unknown = sorted(set(opts) - set(ALLOWED_OPTIONS))
+    if unknown:
+        raise InvalidOption("not an option this service passes to marker: " + ", ".join(map(str, unknown)))
+    for key, kind in ALLOWED_OPTIONS.items():
+        if key in opts and opts[key] is not None and not isinstance(opts[key], kind):
+            raise InvalidOption(f"{key} must be a {kind.__name__}")
     if "output_format" in opts:
         validate_output_format(opts["output_format"])
     if opts.get("page_range"):

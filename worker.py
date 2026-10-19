@@ -17,15 +17,29 @@ success/failure/stopped callback (RQ imports and calls those by name too). A
 refused job is failed without being run, and failing it runs no callback. A
 job enqueued before this change (pickled) is refused the same way.
 
+RQ has two more doors, both shut here (item 78, reopened 2026-10-19). Its
+registry cleanup - every worker's maintenance - calls an expired job's failure
+callback by name, never passing through execute_job; and failing a job sends
+the webhooks it carries, a request to any URL from inside the network. So the
+worker and its queues load jobs as GuardedJob, whose callbacks and webhooks do
+nothing at all (the service uses neither), and check() refuses a job that
+carries webhooks or dependencies. The path, input_root and output_dir must
+also lie under INPUT_DIR / OUTPUT_DIR, as the API already demands; and
+tasks.validate_options accepts only the five options the service uses, so a
+job cannot name a marker class (processors, converter_cls) to import.
+
 Env:
   REDIS_URL   default redis://localhost:6379/0
   REDIS_PASSWORD  Redis AUTH password (unset = no AUTH)
   MARKER_QUEUE default "marker"
+  INPUT_DIR   default /data/input  - a job's path (and input_root) must lie under it
+  OUTPUT_DIR  default /data/output - a job's output_dir must lie under it
   WORKER_PREWARM  default 1; 0 skips the OCR warm-up page (the first job pays it)
 """
 import os
 
 from rq import Queue, SimpleWorker
+from rq.job import Job
 from rq.serializers import JSONSerializer
 
 import tasks
@@ -33,6 +47,47 @@ import tasks
 
 class JobRefused(Exception):
     """A job this service did not enqueue: run nothing, fail it."""
+
+
+class GuardedJob(Job):
+    """A Job whose callbacks and webhooks never run. RQ imports a callback by
+    the name stored in the job and calls it - from execute_job, but also from
+    the started-job registry's cleanup, which check() never sees - and it sends
+    a job's webhooks when it fails it, refused or not. The service uses
+    neither, so here neither exists."""
+
+    @property
+    def success_callback(self):
+        return None
+
+    @property
+    def failure_callback(self):
+        return None
+
+    @property
+    def stopped_callback(self):
+        return None
+
+    def execute_success_callback(self, *args, **kwargs):
+        return None
+
+    def execute_failure_callback(self, *args, **kwargs):
+        return None
+
+    def execute_stopped_callback(self, *args, **kwargs):
+        return None
+
+    def send_webhooks(self, *args, **kwargs):
+        return None
+
+
+def _root(var: str, default: str) -> str:
+    return os.path.realpath(os.environ.get(var, default))
+
+
+def _under(path: str, root: str) -> bool:
+    real = os.path.realpath(path)
+    return real == root or real.startswith(root + os.sep)
 
 
 def check(job) -> None:
@@ -51,12 +106,38 @@ def check(job) -> None:
     for which in ("success", "failure", "stopped"):
         if getattr(job, f"_{which}_callback_name", None):
             raise JobRefused(f"names a {which} callback")
+    if getattr(job, "webhooks", None):
+        raise JobRefused("carries webhooks")
+    if getattr(job, "_dependency_ids", None):
+        raise JobRefused("depends on other jobs")
+    # The API confines these already; a job that reached Redis another way
+    # must not choose what the worker reads or where it writes.
+    inputs, outputs = _root("INPUT_DIR", "/data/input"), _root("OUTPUT_DIR", "/data/output")
+    if not _under(args[0], inputs):
+        raise JobRefused(f"path outside {inputs}")
+    if kwargs.get("input_root") and not _under(kwargs["input_root"], inputs):
+        raise JobRefused(f"input_root outside {inputs}")
+    out_dir = args[1].get("output_dir")
+    if out_dir is not None and (not isinstance(out_dir, str) or not _under(out_dir, outputs)):
+        raise JobRefused(f"output_dir outside {outputs}")
+    try:
+        tasks.validate_options(args[1])
+    except tasks.InvalidOption as exc:
+        raise JobRefused(f"options: {exc}") from exc
 
 
 class GuardedWorker(SimpleWorker):
     """SimpleWorker - no fork, so the models load once - running only tasks.JOB_FUNC."""
 
     serializer = JSONSerializer
+
+    def __init__(self, queues, *args, **kwargs):
+        kwargs["job_class"] = GuardedJob
+        super().__init__(queues, *args, **kwargs)
+        # The registries' cleanup loads jobs with each queue's job_class: set
+        # here, so the guard holds however the queues were built.
+        for q in self.queues:
+            q.job_class = GuardedJob
 
     def execute_job(self, job, queue):
         try:
@@ -83,7 +164,7 @@ def main():
     print(f"[worker] ready — consuming '{queue_name}' from {redis_url}", flush=True)
 
     conn = tasks.redis_connection(redis_url)
-    queue = Queue(queue_name, connection=conn, serializer=JSONSerializer)
+    queue = Queue(queue_name, connection=conn, serializer=JSONSerializer, job_class=GuardedJob)
     GuardedWorker([queue], connection=conn, serializer=JSONSerializer).work()
 
 
