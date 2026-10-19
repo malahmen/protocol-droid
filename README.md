@@ -173,7 +173,9 @@ as JSON (`--report FILE`, default `./marker-bench-<host>-<time>.json`).
 The first version timed only the model load (3.6 s on corelia) as the
 overhead, where a per-file run really pays several times that, and on that it
 gave a wrong answer to a gating decision (Kamino item 64); and it averaged
-text-layer and OCR pages, which differ ~18x (item 65). Now:
+text-layer and OCR pages, which differ ~18x (item 65). A warm sample that fails
+after the timed runs no longer loses them: that path's overhead is reported as
+null with the reason. Now:
 
 | Field | Means |
 | --- | --- |
@@ -360,7 +362,9 @@ curl -s -H "authorization: Bearer $PROTOCOL_DROID_TOKEN" localhost:8000/jobs/<jo
 
 - **Token.** Set `PROTOCOL_DROID_TOKEN` (in `.env`, or the `marker-api` Secret on
   k8s) and every request must carry `Authorization: Bearer <token>`; otherwise
-  `401`. With no token the API is open, so compose binds it to
+  `401`. `/docs` carries the schema in the page itself, so with a token set the
+  browser does not need to fetch `/openapi.json` (which it would without the
+  token). With no token the API is open, so compose binds it to
   `127.0.0.1:8000` only. To reach it from other hosts set **both** a token and
   `API_BIND=0.0.0.0` in `.env`; on k8s the Service is ClusterIP — create the
   Secret before adding an Ingress/LoadBalancer.
@@ -402,7 +406,9 @@ The `k8s/` manifests deploy into the `marker` namespace (`marker-api` /
 PVCs). The image is not published anywhere, so make it reachable by the
 cluster yourself (registry push, or `kind load docker-image`). `service build`
 also tags each build with its image ID (`marker-service:<id>`) and `service
-deploy` applies the manifests pinned to that tag, so a rebuild is a new pod
+deploy` applies the manifests pinned to that tag (and `service enqueue` runs its
+batch job on the image the deployed workers run, not this machine's newest
+build), so a rebuild is a new pod
 spec and rolls out - with plain `:latest` and `IfNotPresent` the pods kept
 the old image. Load the tag `deploy` names. Without docker on the deploying
 machine the ID cannot be read: `:latest` is applied and it says how to roll
