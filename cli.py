@@ -351,12 +351,18 @@ def cmd_bench(args) -> int:
     # a page from llama-server's prompt cache: the same page 0, here, warm,
     # once - straight after a different OCR'd page (prewarm's), so it is not
     # served from that cache either. Cold minus warm is the overhead.
+    # Guarded: it comes after runs that may have taken hours, and one failed
+    # sample must not lose them - the report says why instead (Kamino item 100).
     for kind, pick in picks.items():
-        tasks.prewarm()
-        page0 = dict(opts, page_range="0", output_dir=os.path.join(out_dir, f"warm-{kind}"))
-        t0 = time.perf_counter()
-        tasks.convert_document(pick, page0)
-        overhead[kind] = _overhead(cold[kind], time.perf_counter() - t0)
+        try:
+            tasks.prewarm()
+            page0 = dict(opts, page_range="0", output_dir=os.path.join(out_dir, f"warm-{kind}"))
+            t0 = time.perf_counter()
+            tasks.convert_document(pick, page0)
+            overhead[kind] = _overhead(cold[kind], time.perf_counter() - t0)
+        except Exception as exc:  # noqa: BLE001
+            overhead[kind] = dict(cold[kind], seconds=None,
+                                  why=f"the warm sample failed: {type(exc).__name__}: {exc}")
 
     good = [d for d in docs if d["ok"]]
     warm = {kind: _path_summary([d for d in good if d["path"] == kind])

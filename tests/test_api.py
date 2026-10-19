@@ -90,6 +90,12 @@ class DocsBehindTheToken(ApiCase):
         self.assertEqual(self.client.get("/openapi.json", headers=self.auth()).status_code, 200)
         self.assertEqual(self.client.get("/docs", headers=self.auth()).status_code, 200)
 
+    def test_the_docs_page_carries_the_schema_itself(self):
+        # A browser fetching /openapi.json from the page sends no token (item 100).
+        page = self.client.get("/docs", headers=self.auth()).text
+        self.assertIn('"spec":', page)
+        self.assertIn('"/jobs"', page)
+
     def test_the_schema_still_describes_the_api(self):
         paths = self.client.get("/openapi.json", headers=self.auth()).json()["paths"]
         self.assertIn("/jobs", paths)

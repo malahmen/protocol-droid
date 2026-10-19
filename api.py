@@ -83,7 +83,11 @@ def openapi_schema():
 
 @app.get("/docs", include_in_schema=False)
 def docs():
-    return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title)
+    # The schema goes into the page itself (Swagger UI's `spec`, which wins
+    # over `url`): the browser's own fetch of /openapi.json carries no token,
+    # so with one set the page came up empty (Kamino item 100).
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title,
+                               swagger_ui_parameters={"spec": app.openapi()})
 _conn = tasks.redis_connection(REDIS_URL)
 # JSON, never pickle, and jobs name tasks.JOB_FUNC: worker.py refuses anything else.
 _queue = Queue(QUEUE_NAME, connection=_conn, serializer=JSONSerializer)

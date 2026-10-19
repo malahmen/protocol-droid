@@ -50,6 +50,7 @@ class Base(unittest.TestCase):
             p.start()
         self.converted = []
         self.fail_on = set()
+        self.fail_warm = False
 
     def tearDown(self):
         for p in self.patches:
@@ -80,6 +81,8 @@ class Base(unittest.TestCase):
         self.converted.append((f, dict(opts), input_root))
         if os.path.basename(f) in self.fail_on:
             raise RuntimeError("marker exploded")
+        if self.fail_warm and "warm-" in opts["output_dir"]:
+            raise RuntimeError("warm sample exploded")
         return os.path.join(opts["output_dir"], "out")
 
     def run_cli(self, *argv):
@@ -128,6 +131,16 @@ class Bench(Base):
         self.assertIn("do not measure the overhead", r["overhead"]["text"]["why"])
         self.assertEqual(r["overhead"]["text"]["cold_seconds"], [1.5, 1.5])
         self.assertIsNone(r["resident_saving"][0]["speedup"])
+
+    def test_a_failed_warm_sample_keeps_the_report(self):
+        # It runs after the timed runs: an exception there used to lose them all.
+        self.fail_warm = True
+        rc, r = self.report(self.a, self.c)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(r["documents"]), 2)
+        for kind in ("text", "ocr"):
+            self.assertIsNone(r["overhead"][kind]["seconds"])
+            self.assertIn("warm sample failed", r["overhead"][kind]["why"])
 
     def test_a_path_with_no_pdf_says_so(self):
         _, r = self.report(self.a)
