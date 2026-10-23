@@ -82,7 +82,14 @@ marker `convert` flags: `--output-format markdown|json|html|chunks`,
 `--output-dir`, `--page-range` (single file), `--workers` (batch). Anything after
 `--` is forwarded to marker (LLM-assist, force OCR, …) — including the LLM
 options, since the local backend hands marker's flags straight through and has
-no deployment config of its own. Setup installs pipx and (on macOS/CPU) the
+no deployment config of its own. A folder means its convertible files as deep
+as `scan` goes (3 levels), staged for marker's batch CLI - which on its own
+reads only the top of a folder - so what is converted and what gets a sidecar
+are the same list. Each document's output is `<out>/<stem>/`; a second input
+with the same file name is staged, and lands, as `<stem>_2`. A folder an earlier
+run left that this run did not write to is a failure, not output (marker's
+batch CLI carries on past a file it cannot convert and exits 0), unless
+`-- --skip_existing` asked marker to skip it. Setup installs pipx and (on macOS/CPU) the
 `llama-server` OCR backend; models download on first run (several GB), then run
 offline automatically.
 
@@ -162,6 +169,8 @@ protocol-droid.sh container status
 ```
 
 - Each input's folder is mounted **read-only** and the output folder read-write, **at their own paths**, so no path is rewritten.
+- The output **mirrors the input tree**, as the service's does: `2023/report.pdf` and `2024/report.pdf` go to `2023/report_pdf/` and `2024/report_pdf/`. The tree is taken from the folder given, or the common parent of the files given, so a single file lands where it always did.
+- The runtime's own failures (exit `125`-`127`: the container did not start, or its command did not run) are reported as `1`, inside the exit codes below.
 - The models download once into the named volume `protocol-droid-models` (`PROTOCOL_DROID_MODELS_VOLUME`), not per run.
 - `--runtime podman|docker` (default: podman if present). On rootless podman the caller is mapped onto the image's `app` user, so outputs belong to the caller; docker on Linux writes them as uid 1000 and says so.
 - markitdown is not in this image - it is a pip package with no models. It has a small image of its own (`Dockerfile.markitdown`, see "protocol's converter port" below), and `local --backend markitdown` isolates it on the host.
@@ -495,6 +504,19 @@ markitdown's is named after its output on purpose: a single `provenance.json`
 in a shared folder would be overwritten by the next document in the same run,
 leaving one sidecar for the whole batch and nothing to say so.
 
+markitdown writes `<stem>.md`, except where several inputs of one run share a
+stem - `a/notes.html` and `b/notes.html`, or `report.docx` and `report.pptx` -
+which used to write one file, the last input winning. Each of those gets
+`<dir>/<stem>_<ext>.md` (`a/notes_html.md`, `report_pptx.md`), the directory
+relative to the folder given. The names depend only on the inputs, so a re-run
+replaces its own output; an output this run already wrote is never replaced by
+another of its inputs - that input fails instead.
+
+`conversion.command` is the argv that ran (the local marker backend used to
+record a rebuilt one), with the value of any credential-looking flag
+(`--openai_api_key …`) redacted as options are; marker's `versions` include
+`surya-ocr` and `torch`.
+
 ```json
 {
   "schema": "protocol-droid/provenance/1",
@@ -561,12 +583,13 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | File | Checks | What it pins |
 | --- | ---: | --- |
 | `tests/test_options.py` | 12 | `--page-range` and `--output-format` validation |
-| `tests/test_output_folder.py` | 7 | which name an output file gets, including collisions and symlinks |
+| `tests/test_output_folder.py` | 14 | which name an output file gets, including collisions and symlinks |
 | `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
-| `tests/test_provenance.py` | 34 | what the sidecar records, what it redacts, and its script interface |
+| `tests/test_provenance.py` | 35 | what the sidecar records, what it redacts, and its script interface |
 | `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
 | `tests/test_cli.py` | 29 | the container entry: `bench`'s measurements (the overhead cold minus warm and its order, per-path throughput, per-document saving, page ranges cut per document, prompt recall off), `convert`'s batch and exit codes - marker replaced, never loaded |
-| `tests/test-container.sh` | 23 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host |
+| `tests/test-container.sh` | 31 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host, the input tree kept, the runtime's own exit codes |
+| `tests/test-one-output-per-input.sh` | 36 | every input of a run gets its own output or fails: markitdown inputs sharing a stem; local marker (stubs in `tests/stubs-marker`) with two `a.pdf`, a stale output folder, `--skip_existing`, the argv and versions recorded and redacted, nested files in a folder; auto's missing-input code |
 | `tests/test-k8s-storage.sh` | 22 | the volume claims `service deploy --target k8s` renders: access mode and storage class from the environment or `.env` |
 | `tests/test_job_timeout.py` | 18 | each job's timeout sized from its pages (a 166-page scan no longer killed at an hour), and the worker's warm-up |
 | `tests/test_convert_bytes.py` | 9 | marker at protocol's port: bytes in, files out, the sidecar kept out, no path from the name |

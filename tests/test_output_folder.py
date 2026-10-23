@@ -80,5 +80,28 @@ class OutputFolder(unittest.TestCase):
         self.assertEqual(self.rel("in/report.PDF"), self.rel("in/report.pdf"))
 
 
+from pdroid import markitdown as md  # noqa: E402
+
+
+class MarkitdownNames(unittest.TestCase):
+    """One output per input in a markitdown run (Kamino item 126)."""
+
+    def test_unshared_stems_keep_their_name(self):
+        self.assertEqual(md.output_names(["/i/a.docx", "/i/b.html"], "/i"),
+                         {"/i/a.docx": "a.md", "/i/b.html": "b.md"})
+
+    def test_shared_stem_in_two_folders(self):
+        n = md.output_names(["/i/a/notes.html", "/i/b/notes.html"], "/i")
+        self.assertEqual(n, {"/i/a/notes.html": "a/notes_html.md", "/i/b/notes.html": "b/notes_html.md"})
+
+    def test_shared_stem_two_extensions(self):
+        n = md.output_names(["/i/report.docx", "/i/report.pptx"], "")
+        self.assertEqual(set(n.values()), {"report_docx.md", "report_pptx.md"})
+
+    def test_case_variants_are_one_stem(self):
+        n = md.output_names(["/i/Notes.html", "/i/notes.docx"], "")
+        self.assertEqual(len(set(n.values())), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -204,9 +204,15 @@ def scan_files(directory: str, depth: int, exts) -> list:
     return sorted(found)
 
 
-def link_into_tmp(files) -> str:
-    """Symlink files into a fresh temp dir (collision-safe names); the dir."""
+def link_into_tmp(files):
+    """Symlink files into a fresh temp dir (collision-safe names).
+
+    Returns (dir, [(file, staged name)]): the second a.pdf is staged as
+    a_2.pdf, and whatever reads the output back has to look for a_2, not a
+    (Kamino item 127).
+    """
     tmp = tempfile.mkdtemp(prefix="pd-sel.", dir=os.environ.get("TMPDIR") or None)
+    staged = []
     for f in files:
         if not os.path.isfile(f):
             continue
@@ -218,7 +224,8 @@ def link_into_tmp(files) -> str:
                 i += 1
             name = f"{stem}_{i}{ext}"
         os.symlink(os.path.abspath(f), os.path.join(tmp, name))
-    return tmp
+        staged.append((f, name))
+    return tmp, staged
 
 
 def out_path(directory: str, stem: str, ext: str, clobber: bool = True) -> str:
@@ -264,12 +271,15 @@ def provenance_write(out_folder, src, backend, version, started, finished, fmt,
     """
     if os.environ.get("PROTOCOL_DROID_NO_PROVENANCE") == "1":
         return True
+    versions = [version] if isinstance(version, str) else list(version)
     module, path = _load_provenance()
     if module is None:
         warn(f"provenance: {path} is missing — no sidecar written for {src}.")
         return False
     args = ["--source", src, "--output-dir", out_folder, "--backend", backend,
-            "--started", str(started), "--finished", str(finished), "--version", version]
+            "--started", str(started), "--finished", str(finished)]
+    for v in versions:
+        args += ["--version", v]
     if fmt:
         args += ["--output-format", fmt]
     if root:

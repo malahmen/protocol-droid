@@ -97,6 +97,23 @@ check "  and --no-cold" has "--no-cold" "$T/args"
 run container bench --runtime docker --runs 0 "$T/docs/a.pdf"
 check "--runs must be positive" has "--runs must be a positive number" "$T/out"
 
+echo "## the input tree is kept (Kamino item 128)"
+# arg_after <flag> — the argument that follows <flag> in the recorded run.
+arg_after() { grep -A1 -xF -- "$1" "$T/args" | sed -n 2p; }
+mkdir -p "$T/years/2023" "$T/years/2024"; : > "$T/years/2023/report.pdf"; : > "$T/years/2024/report.pdf"
+run container convert --runtime docker --output-dir "$T/out-y" "$T/years"
+args
+check "a folder is its own input root" test "$(arg_after --input-root)" = "$T/years"
+run container convert --runtime docker --output-dir "$T/out-y" "$T/years/2023/report.pdf" "$T/years/2024/report.pdf"
+args
+check "files named one by one: their common parent" test "$(arg_after --input-root)" = "$T/years"
+run container convert --runtime docker --output-dir "$T/out-y" "$T/docs/a.pdf"
+args
+check "one file: its own folder, so it lands where it did" test "$(arg_after --input-root)" = "$T/docs"
+STUB_RUN_RC=125 run container convert --runtime docker --output-dir "$T/out-y" "$T/docs/a.pdf"
+check "the runtime's 125 becomes 1" test "$RC" -eq 1
+check "  saying the container did not run" has "did not run the conversion" "$T/out"
+
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
 echo "all checks passed"

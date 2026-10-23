@@ -107,6 +107,38 @@ def scan(args) -> int:
     return EX_OK
 
 
+def output_names(files, input_root=""):
+    """{file: output path relative to the output folder}, one per input.
+
+    `<stem>.md`, as always - except where several inputs of this run share a
+    stem: in/a/notes.html and in/b/notes.html, or report.docx and report.pptx,
+    all wrote notes.md or report.md, the last one won, and the run still said
+    "4 converted" (Kamino item 126). Every input of such a group gets
+    `<dir>/<stem>_<ext>.md` instead, the directory taken relative to the input
+    folder (or to the group's common parent). The rule depends only on the
+    inputs, so a re-run writes the same names and replaces its own output.
+    Stems are compared case-insensitively: on macOS notes.md and Notes.md are
+    one file.
+    """
+    groups = {}
+    for f in files:
+        groups.setdefault(os.path.splitext(os.path.basename(f))[0].casefold(), []).append(f)
+    names = {}
+    for group in groups.values():
+        if len(group) == 1:
+            f = group[0]
+            names[f] = os.path.splitext(os.path.basename(f))[0] + ".md"
+            continue
+        dirs = [os.path.dirname(os.path.abspath(f)) for f in group]
+        base = os.path.abspath(input_root) if input_root else os.path.commonpath(dirs)
+        for f, d in zip(group, dirs):
+            rel = os.path.relpath(d, base)
+            rel = "" if rel == os.curdir or rel.startswith(os.pardir) else rel
+            stem, ext = os.path.splitext(os.path.basename(f))
+            names[f] = os.path.join(rel, f"{stem}_{ext.lstrip('.')}.md" if ext else f"{stem}.md")
+    return names
+
+
 def convert(args, open_output=True) -> int:
     """One .md per input (markitdown has no batch mode).
 
@@ -147,6 +179,8 @@ def convert(args, open_output=True) -> int:
 
     ok = fail = missing = noprov = 0
     ver = version()
+    names = output_names([f for f in paths if os.path.isfile(f)], input_root)
+    written = set()     # this run's outputs: a second input never replaces one
     for f in paths:
         # Counted, not just warned about: a path the caller named and this tool
         # never opened is the case that used to exit 0.
@@ -154,8 +188,15 @@ def convert(args, open_output=True) -> int:
             warn(f"Not a file: {f}")
             missing += 1
             continue
-        stem = os.path.splitext(os.path.basename(f))[0]
-        out = c.out_path(out_dir, stem, "md", clobber)
+        rel = names[f]
+        folder = os.path.join(out_dir, os.path.dirname(rel))
+        os.makedirs(folder, exist_ok=True)
+        out = c.out_path(folder, os.path.splitext(os.path.basename(rel))[0], "md", clobber)
+        if os.path.normcase(os.path.abspath(out)).casefold() in written:
+            warn(f"Failed: {f} — its output {out} was already written by another input of this run")
+            fail += 1
+            continue
+        written.add(os.path.normcase(os.path.abspath(out)).casefold())
         info(f"Converting {f} ...")
         started = c.now_epoch()
         if c.run([binary, f, "-o", out, *extra]) == 0:
@@ -165,7 +206,7 @@ def convert(args, open_output=True) -> int:
             # SAME folder, so one shared provenance.json would let the last
             # document own the whole batch's provenance.
             name = os.path.basename(out)
-            if not c.provenance_write(out_dir, f, "markitdown", f"markitdown={ver}", started, c.now_epoch(),
+            if not c.provenance_write(folder, f, "markitdown", f"markitdown={ver}", started, c.now_epoch(),
                                       "markdown", input_root, f"{name}.provenance.json", [name],
                                       [binary, f, "-o", out, *extra]):
                 noprov += 1
