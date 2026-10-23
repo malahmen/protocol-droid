@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# A stand-in for marker's batch CLI, as marker-pdf 2.0.0 behaves: it lists
+# only the TOP of its input folder, carries on past a file it cannot convert
+# ("boom" in the name) and still exits 0, and --skip_existing skips a file
+# whose output is already there.
+set -uo pipefail
+in="$1"; shift; out="" skip=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in --output_dir) out="$2"; shift 2 ;; --skip_existing) skip=1; shift ;; *) shift ;; esac
+done
+for f in "$in"/*; do
+    [[ -f "$f" ]] || continue
+    stem="$(basename "${f%.*}")"
+    case "$f" in *boom*) echo "stub: error converting $f" >&2; continue ;; esac
+    (( skip )) && [[ -f "$out/$stem/$stem.md" ]] && continue
+    mkdir -p "$out/$stem" && printf '# converted %s\n' "$(basename "$(readlink -f "$f")")" > "$out/$stem/$stem.md"
+done
+exit 0

@@ -94,6 +94,35 @@ def redact_options(options: dict | None) -> dict:
     return out
 
 
+def redact_argv(argv: list | None) -> list:
+    """`argv` with the value of every credential-looking flag replaced.
+
+    The same rule as redact_options, applied to a command line: a flag whose
+    name looks like a credential has its value redacted, as `--flag=value` or
+    as the next argument. The local marker backend records the argv it ran,
+    passthrough flags included (Kamino item 127), and `--openai_api_key KEY`
+    is a passthrough flag.
+    """
+    out, hide_next = [], False
+    for a in argv or []:
+        a = str(a)
+        if hide_next:
+            out.append(REDACTED)
+            hide_next = False
+            continue
+        if a.startswith("-"):
+            name, eq, _value = a.partition("=")
+            if _SECRET_NAME_RE.search(name):
+                if eq:
+                    out.append(f"{name}={REDACTED}")
+                else:
+                    out.append(a)
+                    hide_next = True
+                continue
+        out.append(a)
+    return out
+
+
 def tool_versions(packages=PROVENANCE_PACKAGES) -> dict:
     """Installed versions of the packages a conversion depends on.
 
@@ -172,7 +201,7 @@ def provenance_record(fpath: str, out_folder: str, options: dict | None,
             "finished": _utc(finished),
             "seconds": round(finished - started, 3),
             "output_format": output_format or (options or {}).get("output_format", "markdown"),
-            "command": list(command or []),
+            "command": redact_argv(command),
             "output_dir": os.path.abspath(out_folder),
             "outputs": outputs,
         },

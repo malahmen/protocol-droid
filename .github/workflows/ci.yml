@@ -49,6 +49,7 @@ jobs:
           tests/test-exit-codes.sh
           tests/test-k8s-storage.sh
           tests/test-container.sh
+          tests/test-one-output-per-input.sh
 
 
   markitdown-image:

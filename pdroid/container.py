@@ -14,7 +14,7 @@ import time
 
 from . import common as c
 from . import marker
-from .ui import EX_NO_INPUT, EX_NOTHING, EX_OK, error_exit, info, success, warn
+from .ui import EX_FAILED, EX_NO_INPUT, EX_NOTHING, EX_OK, error_exit, info, success, warn
 
 IMAGE = "marker-service:latest"          # the service image (service.py, compose, k8s)
 APP_UID = 1000                           # the image's `app` user
@@ -140,14 +140,31 @@ def convert(args, rt="") -> int:
         error_exit(f"cannot create {out_dir}")
     out_dir = _abs_dir(out_dir)
 
+    # The output mirrors the input tree under this root, as the service's
+    # does: without it 2023/report.pdf and 2024/report.pdf both went to
+    # report_pdf/, the second overwriting the first, and the sidecar's
+    # relative_path was null (Kamino item 128). One folder given is its own
+    # root; otherwise the inputs' common parent, so a single file, or files
+    # side by side, land exactly where they always did.
+    if len(paths) == 1 and os.path.isdir(paths[0]):
+        root = _abs_dir(paths[0])
+    else:
+        root = os.path.commonpath([os.path.dirname(f) for f in files])
+
     cmd = [rt, *base_args(rt), *mount_args(out_dir, files), IMAGE,
-           "python", "cli.py", "convert", "--output-format", fmt, "--output-dir", out_dir]
+           "python", "cli.py", "convert", "--output-format", fmt, "--output-dir", out_dir,
+           "--input-root", root]
     if page_range:
         cmd += ["--page-range", page_range]
     if force_ocr:
         cmd.append("--force-ocr")
     info(f"container: {len(files)} file(s) → marker ({rt}, {IMAGE})")
     rc = c.run(cmd + files)
+    if rc not in (EX_OK, EX_FAILED, EX_NO_INPUT, EX_NOTHING):
+        # 125-127 are the runtime's own (it could not start the container, or
+        # the command in it): outside the 0-3 contract a caller reads.
+        warn(f"{rt} exited {rc}: the container did not run the conversion.")
+        rc = EX_FAILED
     if rc == 0 and os.path.isdir(out_dir):
         c.open_path(out_dir)
     if rc == 0 and missing:

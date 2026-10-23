@@ -10,7 +10,7 @@ import shutil
 import subprocess
 
 from . import common as c
-from .ui import EX_FAILED, EX_NO_INPUT, EX_OK, error_exit, info, success, warn
+from .ui import EX_FAILED, EX_NO_INPUT, EX_NOTHING, EX_OK, error_exit, info, success, warn
 
 PKG = "marker-pdf"
 SPEC = "marker-pdf[full]"      # [full] = non-PDF inputs (docx/pptx/xlsx/epub/html)
@@ -239,26 +239,81 @@ def scan(args) -> int:
     return EX_OK
 
 
-def _provenance(out_dir, root, ver, fmt, started, files) -> bool:
-    """One sidecar per document, in the folder marker made for it (<out>/<stem>/).
+_VERSIONS = """
+from importlib import metadata
+for p in ("marker-pdf", "surya-ocr", "torch"):
+    try: print(p + "=" + metadata.version(p))
+    except Exception: print(p + "=")
+"""
 
-    That layout is marker's, not ours, so a folder that is not there is
-    reported rather than assumed.
+
+def _versions(ver: str) -> list:
+    """PKG=VER for marker and what its output depends on, read in marker's venv.
+
+    marker-pdf alone said nothing about the OCR (surya) or torch that made the
+    output (Kamino item 127); an empty VER is recorded as unknown.
     """
-    ok, finished = True, c.now_epoch()
-    for f in files:
-        if not os.path.isfile(f):
-            continue
-        stem = os.path.splitext(os.path.basename(f))[0]
-        folder = os.path.join(out_dir, stem)
+    py = c.venv_python(PKG)
+    got = (c.output_of([py, "-c", _VERSIONS]) or "") if py else ""
+    found = dict(line.split("=", 1) for line in got.splitlines() if "=" in line)
+    found["marker-pdf"] = found.get("marker-pdf") or ver
+    return [f"{k}={found.get(k, '')}" for k in ("marker-pdf", "surya-ocr", "torch")]
+
+
+def _fresh(folder: str, started: int) -> bool:
+    """True if this run wrote anything in `folder`."""
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                if os.path.getmtime(os.path.join(root, name)) >= started:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+def _provenance(out_dir, root, versions, fmt, started, staged, command, skip_existing=False) -> int:
+    """One sidecar per document, in the folder marker made for it; the number
+    of documents that have no output from this run.
+
+    `staged` pairs each source with the name marker saw: <out>/<stem of that
+    name>/ is marker's layout, and a source staged as a_2.pdf is in a_2/, not
+    in the a/ another a.pdf made (Kamino item 127). A folder left by an
+    earlier run is not this run's output: marker's batch CLI carries on past
+    a file it cannot convert, and a fresh sidecar on the old folder made the
+    failure invisible. With --skip_existing that folder is marker skipping on
+    purpose, and its own sidecar stays.
+    """
+    bad, finished = 0, c.now_epoch()
+    for f, name in staged:
+        folder = os.path.join(out_dir, os.path.splitext(name)[0])
         if not os.path.isdir(folder):
-            warn(f"provenance: no output folder at {folder} for {f} — sidecar skipped.")
-            ok = False
+            warn(f"Failed: {f} — marker wrote no output folder ({folder}).")
+            bad += 1
             continue
-        if not c.provenance_write(folder, f, "marker", f"marker-pdf={ver}", started, finished, fmt, root, "",
-                                  None, ["marker", f, "--output_format", fmt, "--output_dir", out_dir]):
-            ok = False
-    return ok
+        if not _fresh(folder, started):
+            if skip_existing:
+                info(f"Skipped: {f} — already converted in {folder} (--skip_existing).")
+                continue
+            warn(f"Failed: {f} — {folder} is from an earlier run; marker wrote nothing there this time.")
+            bad += 1
+            continue
+        if not c.provenance_write(folder, f, "marker", versions, started, finished, fmt, root, "",
+                                  None, command):
+            bad += 1
+    return bad
+
+
+def _inputs(paths):
+    """The files a batch stands for: a folder for its convertible files, as
+    deep as scan goes, and a file for itself. marker's batch CLI lists only
+    the top of the folder it is given (os.listdir, marker-pdf 2.0.0) while
+    provenance walked three levels (Kamino item 128), so the batch is staged
+    from this list and both see the same files."""
+    files = []
+    for p in paths:
+        files += c.scan_files(p, c.DEFAULT_DEPTH, EXTS) if os.path.isdir(p) else [p]
+    return files
 
 
 def convert(args, open_output=True) -> int:
@@ -303,32 +358,27 @@ def convert(args, open_output=True) -> int:
         return EX_NO_INPUT
     paths = present
 
-    tmp, input_root = "", ""
-    if len(paths) == 1 and os.path.isfile(paths[0]):
-        mode = "single"
-    elif len(paths) == 1 and os.path.isdir(paths[0]):
-        mode, in_dir, label, input_root = "batch", paths[0], paths[0], paths[0]
-    else:
-        mode, tmp = "batch", c.link_into_tmp(paths)
-        in_dir, label = tmp, f"{len(paths)} selected files"
+    input_root = paths[0] if len(paths) == 1 and os.path.isdir(paths[0]) else ""
+    files = _inputs(paths)
+    if not files:
+        warn(f"No supported files in {' '.join(paths)} (marker handles: {' '.join(EXTS)}).")
+        return EX_NO_INPUT if missing else EX_NOTHING
 
-    ver, started, rc, noprov = version(), c.now_epoch(), 0, 0
+    versions, started, rc, bad = _versions(version()), c.now_epoch(), 0, 0
+    skip_existing = "--skip_existing" in extra
+    tmp = ""
     try:
-        if mode == "single":
+        if len(files) == 1 and not input_root:
             if page_range:
                 extra += ["--page_range", page_range]
             binary = c.resolve_bin(PKG, "marker_single") or error_exit("marker_single not found — run setup.")
-            info(f"Converting {paths[0]} → {out_fmt} in {out_dir}/")
-            if c.run([binary, paths[0], "--output_format", out_fmt, "--output_dir", out_dir, *extra]) == 0:
-                success(f"Done → {out_dir}/")
-                if open_output:
-                    c.open_path(out_dir)
-                if not _provenance(out_dir, input_root, ver, out_fmt, started, [paths[0]]):
-                    noprov += 1
-            else:
-                warn(f"Conversion failed for: {paths[0]}")
-                rc = 1
+            # What ran is what is recorded - this argv, not a rebuilt one.
+            cmd = [binary, files[0], "--output_format", out_fmt, "--output_dir", out_dir, *extra]
+            staged = [(files[0], os.path.basename(files[0]))]
+            info(f"Converting {files[0]} → {out_fmt} in {out_dir}/")
         else:
+            if page_range:
+                warn("--page-range applies to a single file; marker's batch CLI has no such option - ignored.")
             if workers:
                 if workers.isdigit() and int(workers) >= 1:
                     extra += ["--workers", workers]
@@ -336,24 +386,25 @@ def convert(args, open_output=True) -> int:
                     warn(f"Invalid worker count '{workers}', letting marker decide.")
             ensure_deps()
             binary = c.resolve_bin(PKG, "marker") or error_exit("marker (batch CLI) not found — run setup.")
-            info(f"Converting {label} → {out_fmt} in {out_dir}/")
-            if c.run([binary, in_dir, "--output_format", out_fmt, "--output_dir", out_dir, *extra]) == 0:
-                success(f"Done → {out_dir}/")
-                if open_output:
-                    c.open_path(out_dir)
-                batch = list(paths)
-                if input_root:
-                    batch = c.scan_files(input_root, c.DEFAULT_DEPTH, EXTS) or batch
-                if not _provenance(out_dir, input_root, ver, out_fmt, started, batch):
-                    noprov += 1
+            tmp, staged = c.link_into_tmp(files)
+            cmd = [binary, tmp, "--output_format", out_fmt, "--output_dir", out_dir, *extra]
+            info(f"Converting {input_root or f'{len(files)} selected files'} ({len(files)} file(s)) → {out_fmt} in {out_dir}/")
+        if c.run(cmd) == 0:
+            bad = _provenance(out_dir, input_root, versions, out_fmt, started, staged, cmd, skip_existing)
+            if bad:
+                warn(f"Done with {bad} of {len(staged)} document(s) failed → {out_dir}/")
             else:
-                warn("Batch conversion reported errors.")
-                rc = 1
+                success(f"Done → {out_dir}/")
+            if open_output:
+                c.open_path(out_dir)
+        else:
+            warn("marker reported errors.")
+            rc = 1
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    if rc != 0 or noprov > 0:
+    if rc != 0 or bad > 0:
         return EX_FAILED
     if missing > 0:
         return EX_NO_INPUT

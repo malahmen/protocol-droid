@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# A stand-in for marker_single: <out>/<stem>/<stem>.md, marker's layout. A
+# source whose name contains "boom" fails.
+set -uo pipefail
+src="$1"; shift; out=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in --output_dir) out="$2"; shift 2 ;; *) shift ;; esac
+done
+case "$src" in *boom*) echo "stub: refusing $src" >&2; exit 1 ;; esac
+stem="$(basename "${src%.*}")"
+mkdir -p "$out/$stem" && printf '# converted %s\n' "$(basename "$src")" > "$out/$stem/$stem.md"

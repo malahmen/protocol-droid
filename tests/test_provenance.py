@@ -217,6 +217,30 @@ class Write(unittest.TestCase):
             self.assertTrue(fh.read().endswith("\n"))
 
 
+class RedactArgv(unittest.TestCase):
+    """The recorded command hides credentials the way options do (Kamino 127)."""
+
+    def test_value_after_a_secret_flag(self):
+        self.assertEqual(provenance.redact_argv(["m", "--openai_api_key", "sk-1", "--x", "1"]),
+                         ["m", "--openai_api_key", provenance.REDACTED, "--x", "1"])
+
+    def test_equals_form(self):
+        self.assertEqual(provenance.redact_argv(["--gemini_api_key=g-1"]),
+                         ["--gemini_api_key=" + provenance.REDACTED])
+
+    def test_ordinary_flags_and_paths_kept(self):
+        argv = ["/v/bin/marker_single", "/docs/token-list.pdf", "--output_dir", "/out"]
+        self.assertEqual(provenance.redact_argv(argv), argv)
+
+    def test_record_uses_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "a.pdf")
+            with open(src, "w") as fh:
+                fh.write("x")
+            rec = provenance.provenance_record(src, d, None, 0, 1, command=["m", "--api_key", "k"])
+            self.assertEqual(rec["conversion"]["command"], ["m", "--api_key", provenance.REDACTED])
+
+
 class ReExport(unittest.TestCase):
     def test_tasks_uses_the_same_implementation(self):
         # convert_document calls these by name; if the module split ever leaves
