@@ -8,6 +8,7 @@ import glob
 import os
 import shutil
 import subprocess
+import tempfile
 
 from . import common as c
 from .ui import EX_FAILED, EX_NO_INPUT, EX_NOTHING, EX_OK, error_exit, info, success, warn
@@ -260,8 +261,28 @@ def _versions(ver: str) -> list:
     return [f"{k}={found.get(k, '')}" for k in ("marker-pdf", "surya-ocr", "torch")]
 
 
+def _fs_clock(directory: str, fallback: int) -> int:
+    """The time by the clock of the filesystem `directory` is on.
+
+    _fresh compares output mtimes, which a network share stamps with the
+    server's clock, so the start of the run is read the same way: the mtime of
+    a file created there now. A client clock ahead of the server's would
+    otherwise call every fresh folder "from an earlier run" (Kamino item 204).
+    """
+    try:
+        fd, path = tempfile.mkstemp(prefix=".pd-clock.", dir=directory)
+        try:
+            os.close(fd)
+            return int(os.path.getmtime(path))
+        finally:
+            os.unlink(path)
+    except OSError:
+        return fallback
+
+
 def _fresh(folder: str, started: int) -> bool:
-    """True if this run wrote anything in `folder`."""
+    """True if this run wrote anything in `folder` (`started` by the
+    filesystem's clock, see _fs_clock)."""
     for root, _dirs, files in os.walk(folder):
         for name in files:
             try:
@@ -272,7 +293,8 @@ def _fresh(folder: str, started: int) -> bool:
     return False
 
 
-def _provenance(out_dir, root, versions, fmt, started, staged, command, skip_existing=False) -> int:
+def _provenance(out_dir, root, versions, fmt, started, staged, command, skip_existing=False,
+                fresh_since=None) -> int:
     """One sidecar per document, in the folder marker made for it; the number
     of documents that have no output from this run.
 
@@ -283,17 +305,25 @@ def _provenance(out_dir, root, versions, fmt, started, staged, command, skip_exi
     a file it cannot convert, and a fresh sidecar on the old folder made the
     failure invisible. With --skip_existing that folder is marker skipping on
     purpose, and its own sidecar stays.
+
+    Once a document has its folder, any other folder whose sidecar names the
+    same source is an earlier run's copy - a leftover of the order-based a_2
+    naming, or of a name that changed as inputs came and went - and is
+    removed, so the document is not ingested twice (Kamino item 204).
     """
     bad, finished = 0, c.now_epoch()
+    fresh_since = started if fresh_since is None else fresh_since
+    own = {}
     for f, name in staged:
         folder = os.path.join(out_dir, os.path.splitext(name)[0])
         if not os.path.isdir(folder):
             warn(f"Failed: {f} — marker wrote no output folder ({folder}).")
             bad += 1
             continue
-        if not _fresh(folder, started):
+        if not _fresh(folder, fresh_since):
             if skip_existing:
                 info(f"Skipped: {f} — already converted in {folder} (--skip_existing).")
+                own[os.path.abspath(f)] = folder
                 continue
             warn(f"Failed: {f} — {folder} is from an earlier run; marker wrote nothing there this time.")
             bad += 1
@@ -301,18 +331,52 @@ def _provenance(out_dir, root, versions, fmt, started, staged, command, skip_exi
         if not c.provenance_write(folder, f, "marker", versions, started, finished, fmt, root, "",
                                   None, command):
             bad += 1
+            continue
+        own[os.path.abspath(f)] = folder
+    _drop_duplicates(out_dir, own)
     return bad
 
 
-def _inputs(paths):
+def _drop_duplicates(out_dir: str, own: dict) -> None:
+    """Remove the folders in `out_dir` whose marker sidecar names a source of
+    `own` ({source: the folder this run gave it}) other than its own folder."""
+    import json
+    keep = {os.path.realpath(d) for d in own.values()}
+    try:
+        entries = sorted(os.listdir(out_dir))
+    except OSError:
+        return
+    for entry in entries:
+        folder = os.path.join(out_dir, entry)
+        sidecar = os.path.join(folder, "provenance.json")
+        if os.path.realpath(folder) in keep or not os.path.isfile(sidecar):
+            continue
+        try:
+            with open(sidecar, encoding="utf-8") as fh:
+                record = json.load(fh)
+            src = record["source"]["path"]
+            backend = record["conversion"]["backend"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if backend == "marker" and src in own:
+            info(f"Removed {folder}: an earlier copy of {src}, which is now in {own[src]}.")
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+def _inputs(paths, out_dir=""):
     """The files a batch stands for: a folder for its convertible files, as
     deep as scan goes, and a file for itself. marker's batch CLI lists only
     the top of the folder it is given (os.listdir, marker-pdf 2.0.0) while
     provenance walked three levels (Kamino item 128), so the batch is staged
-    from this list and both see the same files."""
-    files = []
+    from this list and both see the same files. The output folder is never
+    an input (Kamino item 190), and a file named twice is one input: two
+    inputs with one name are refused (Kamino item 204)."""
+    files, seen = [], set()
     for p in paths:
-        files += c.scan_files(p, c.DEFAULT_DEPTH, EXTS) if os.path.isdir(p) else [p]
+        for f in c.scan_files(p, c.DEFAULT_DEPTH, EXTS, skip=(out_dir,)) if os.path.isdir(p) else [p]:
+            if os.path.abspath(f) not in seen:
+                seen.add(os.path.abspath(f))
+                files.append(f)
     return files
 
 
@@ -359,12 +423,22 @@ def convert(args, open_output=True) -> int:
     paths = present
 
     input_root = paths[0] if len(paths) == 1 and os.path.isdir(paths[0]) else ""
-    files = _inputs(paths)
+    files = _inputs(paths, out_dir)
     if not files:
         warn(f"No supported files in {' '.join(paths)} (marker handles: {' '.join(EXTS)}).")
         return EX_NO_INPUT if missing else EX_NOTHING
+    # Output folder names, from the inputs alone (Kamino item 204). One that
+    # two inputs would share is refused for both, loudly, before anything runs.
+    names = c.output_stems(files, input_root, flat=True)
+    clashes = c.name_clashes(names)
+    for f in sorted(clashes):
+        warn(f"Failed: {f} — its output folder {names[f]}/ would also be another input's; rename one of them.")
+    files = [f for f in files if f not in clashes]
+    if not files:
+        return EX_FAILED
 
-    versions, started, rc, bad = _versions(version()), c.now_epoch(), 0, 0
+    versions, started, rc, bad = _versions(version()), c.now_epoch(), 0, len(clashes)
+    fresh_since = _fs_clock(out_dir, started)
     skip_existing = "--skip_existing" in extra
     tmp = ""
     try:
@@ -386,13 +460,14 @@ def convert(args, open_output=True) -> int:
                     warn(f"Invalid worker count '{workers}', letting marker decide.")
             ensure_deps()
             binary = c.resolve_bin(PKG, "marker") or error_exit("marker (batch CLI) not found — run setup.")
-            tmp, staged = c.link_into_tmp(files)
+            tmp, staged = c.link_into_tmp(files, names)
             cmd = [binary, tmp, "--output_format", out_fmt, "--output_dir", out_dir, *extra]
             info(f"Converting {input_root or f'{len(files)} selected files'} ({len(files)} file(s)) → {out_fmt} in {out_dir}/")
         if c.run(cmd) == 0:
-            bad = _provenance(out_dir, input_root, versions, out_fmt, started, staged, cmd, skip_existing)
+            bad += _provenance(out_dir, input_root, versions, out_fmt, started, staged, cmd,
+                               skip_existing, fresh_since)
             if bad:
-                warn(f"Done with {bad} of {len(staged)} document(s) failed → {out_dir}/")
+                warn(f"Done with {bad} of {len(staged) + len(clashes)} document(s) failed → {out_dir}/")
             else:
                 success(f"Done → {out_dir}/")
             if open_output:

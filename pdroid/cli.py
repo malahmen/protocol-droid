@@ -90,7 +90,8 @@ def auto_convert(args) -> int:
     # A single folder stands for the union of both backends' types; an empty
     # one is "nothing to convert" (3), not a failure (1).
     if len(paths) == 1 and os.path.isdir(paths[0]):
-        listed = c.scan_files(paths[0], c.DEFAULT_DEPTH, tuple(marker.EXTS) + tuple(markitdown.EXTS))
+        listed = c.scan_files(paths[0], c.DEFAULT_DEPTH, tuple(marker.EXTS) + tuple(markitdown.EXTS),
+                              skip=(out_dir,))
         if not listed:
             warn(f"No supported files under {paths[0]}.")
             return EX_NOTHING

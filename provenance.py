@@ -65,6 +65,18 @@ PROVENANCE_PACKAGES = BACKEND_PACKAGES["marker"]
 _SECRET_NAME_RE = re.compile(r"key|token|secret|password|credential", re.I)
 REDACTED = "[redacted]"
 
+# A URL's user:password@ - `--openai_base_url http://u:SECRET@h/v1` names no
+# credential, and carries one (Kamino item 204). The userinfo is everything
+# between `scheme://` and the last @ before the path.
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/?#\s]*@")
+
+
+def redact_url(value):
+    """`value` with the userinfo of every URL in it replaced; non-strings as is."""
+    if not isinstance(value, str):
+        return value
+    return _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}{REDACTED}@", value)
+
 
 def _utc(ts: float) -> str:
     """An ISO-8601 UTC timestamp from a POSIX time, to the second."""
@@ -90,7 +102,7 @@ def redact_options(options: dict | None) -> dict:
     """
     out = {}
     for k, v in (options or {}).items():
-        out[k] = REDACTED if _SECRET_NAME_RE.search(str(k)) else v
+        out[k] = REDACTED if _SECRET_NAME_RE.search(str(k)) else redact_url(v)
     return out
 
 
@@ -101,7 +113,8 @@ def redact_argv(argv: list | None) -> list:
     name looks like a credential has its value redacted, as `--flag=value` or
     as the next argument. The local marker backend records the argv it ran,
     passthrough flags included (Kamino item 127), and `--openai_api_key KEY`
-    is a passthrough flag.
+    is a passthrough flag. A URL keeps its host and path, never its
+    user:password@ (redact_url).
     """
     out, hide_next = [], False
     for a in argv or []:
@@ -119,7 +132,7 @@ def redact_argv(argv: list | None) -> list:
                     out.append(a)
                     hide_next = True
                 continue
-        out.append(a)
+        out.append(redact_url(a))
     return out
 
 

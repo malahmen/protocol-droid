@@ -232,6 +232,22 @@ class RedactArgv(unittest.TestCase):
         argv = ["/v/bin/marker_single", "/docs/token-list.pdf", "--output_dir", "/out"]
         self.assertEqual(provenance.redact_argv(argv), argv)
 
+    def test_a_url_keeps_its_host_never_its_credentials(self):
+        # Kamino item 204: the flag's name says nothing about a secret.
+        self.assertEqual(
+            provenance.redact_argv(["m", "--openai_base_url", "http://u:SECRET@h:8080/v1",
+                                    "--x=https://tok@h/p", "plain://no-userinfo/x"]),
+            ["m", "--openai_base_url", "http://[redacted]@h:8080/v1",
+             "--x=https://[redacted]@h/p", "plain://no-userinfo/x"])
+
+    def test_an_at_sign_in_the_password(self):
+        self.assertEqual(provenance.redact_url("http://u:p@ss@h/v1?q=a@b"),
+                         "http://[redacted]@h/v1?q=a@b")
+
+    def test_option_values_too(self):
+        got = provenance.redact_options({"openai_base_url": "http://u:SECRET@h/v1", "n": 3})
+        self.assertEqual(got, {"openai_base_url": "http://[redacted]@h/v1", "n": 3})
+
     def test_record_uses_it(self):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "a.pdf")

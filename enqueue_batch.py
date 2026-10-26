@@ -45,7 +45,11 @@ def main():
 
     input_root = os.path.realpath(args.input_dir)
     count = 0
-    for root, _dirs, files in os.walk(args.input_dir):
+    # The output folder is never an input, wherever it is: inside input_dir its
+    # extracted images were enqueued as documents on the next run (Kamino 190).
+    output_real = os.path.realpath(args.output_dir)
+    for root, dirs, files in os.walk(args.input_dir):
+        dirs[:] = sorted(d for d in dirs if os.path.realpath(os.path.join(root, d)) != output_real)
         for name in sorted(files):
             if os.path.splitext(name)[1].lower() not in SUPPORTED:
                 continue

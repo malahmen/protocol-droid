@@ -85,11 +85,16 @@ options, since the local backend hands marker's flags straight through and has
 no deployment config of its own. A folder means its convertible files as deep
 as `scan` goes (3 levels), staged for marker's batch CLI - which on its own
 reads only the top of a folder - so what is converted and what gets a sidecar
-are the same list. Each document's output is `<out>/<stem>/`; a second input
-with the same file name is staged, and lands, as `<stem>_2`. A folder an earlier
+are the same list; the output folder is never part of it, wherever it is. Each
+document's output is `<out>/<stem>/`; inputs that share a stem (`x/a.pdf` and
+`y/a.pdf`, or `report.pdf` and `report.docx`) land as `<dir>_<stem>_<ext>/`
+(`x_a_pdf/`, `report_docx/`) - names from the inputs, never from their order.
+A folder whose sidecar names a document this run gave another folder (an
+earlier run's name for it) is removed. A folder an earlier
 run left that this run did not write to is a failure, not output (marker's
 batch CLI carries on past a file it cannot convert and exits 0), unless
-`-- --skip_existing` asked marker to skip it. Setup installs pipx and (on macOS/CPU) the
+`-- --skip_existing` asked marker to skip it; "this run" is read on the output
+disk's own clock, so a network share's clock does not have to match yours. Setup installs pipx and (on macOS/CPU) the
 `llama-server` OCR backend; models download on first run (several GB), then run
 offline automatically.
 
@@ -508,13 +513,18 @@ markitdown writes `<stem>.md`, except where several inputs of one run share a
 stem - `a/notes.html` and `b/notes.html`, or `report.docx` and `report.pptx` -
 which used to write one file, the last input winning. Each of those gets
 `<dir>/<stem>_<ext>.md` (`a/notes_html.md`, `report_pptx.md`), the directory
-relative to the folder given. The names depend only on the inputs, so a re-run
+relative to the folder given; a name another input already has this way
+(`report_docx.html` next to `report.docx`) takes the same form
+(`report_docx_html.md`). The names depend only on the inputs, so a re-run
 replaces its own output; an output this run already wrote is never replaced by
-another of its inputs - that input fails instead.
+another of its inputs - that input fails instead. An output folder inside the
+input folder is skipped, and a sidecar is never an input.
 
 `conversion.command` is the argv that ran (the local marker backend used to
 record a rebuilt one), with the value of any credential-looking flag
-(`--openai_api_key …`) redacted as options are; marker's `versions` include
+(`--openai_api_key …`) redacted as options are, and any URL's
+`user:password@` replaced (`--openai_base_url http://[redacted]@host/v1`);
+marker's `versions` include
 `surya-ocr` and `torch`.
 
 ```json
@@ -543,7 +553,7 @@ Two deliberate choices:
 - **Credentials are redacted** by key name — `openai_api_key` and anything else
   matching `key|token|secret|password|credential`. The resolved options carry
   the deployment's LLM key, and `output/` is the directory meant to be handed to
-  the next pipeline stage.
+  the next pipeline stage. A URL's userinfo is replaced in any value.
 - **A sidecar that cannot be written is a failure** (exit `1`), not a warning.
   The output is still on disk, but a conversion with no provenance is only
   discovered at the moment somebody needs to decide what to re-convert — which
@@ -585,11 +595,12 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_options.py` | 12 | `--page-range` and `--output-format` validation |
 | `tests/test_output_folder.py` | 14 | which name an output file gets, including collisions and symlinks |
 | `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
-| `tests/test_provenance.py` | 35 | what the sidecar records, what it redacts, and its script interface |
+| `tests/test_provenance.py` | 41 | what the sidecar records, what it redacts (credential-named values, a URL's `user:password@`), and its script interface |
+| `tests/test_local_convert.py` | 13 | local runs in process against the stubs: the guard that fails an input whose output another already wrote, case-folded and order-free output names, the output folder and sidecars never scanned (also by `enqueue_batch.py`, with rq), a client clock ahead of the output disk's, earlier copies of a document removed |
 | `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
 | `tests/test_cli.py` | 29 | the container entry: `bench`'s measurements (the overhead cold minus warm and its order, per-path throughput, per-document saving, page ranges cut per document, prompt recall off), `convert`'s batch and exit codes - marker replaced, never loaded |
 | `tests/test-container.sh` | 31 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host, the input tree kept, the runtime's own exit codes |
-| `tests/test-one-output-per-input.sh` | 36 | every input of a run gets its own output or fails: markitdown inputs sharing a stem; local marker (stubs in `tests/stubs-marker`) with two `a.pdf`, a stale output folder, `--skip_existing`, the argv and versions recorded and redacted, nested files in a folder; auto's missing-input code |
+| `tests/test-one-output-per-input.sh` | 62 | every input of a run gets its own output or fails: markitdown inputs sharing a stem; local marker (stubs in `tests/stubs-marker`) with two `a.pdf`, a stale output folder, `--skip_existing`, the argv and versions recorded and redacted, nested files in a folder; an output folder inside the input folder, run again (markitdown, marker, auto); inputs added and removed, a leftover `a_2`/`a_3`, `report_docx.html` next to `report.docx`, a URL with credentials, a file named twice; auto's missing-input code |
 | `tests/test-k8s-storage.sh` | 22 | the volume claims `service deploy --target k8s` renders: access mode and storage class from the environment or `.env` |
 | `tests/test_job_timeout.py` | 18 | each job's timeout sized from its pages (a 166-page scan no longer killed at an hour), and the worker's warm-up |
 | `tests/test_convert_bytes.py` | 9 | marker at protocol's port: bytes in, files out, the sidecar kept out, no path from the name |

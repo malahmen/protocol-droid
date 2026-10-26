@@ -6,6 +6,11 @@
 #     ignores an output folder an earlier run left, records the argv that ran
 #     (redacted) and the OCR/torch versions, and sees the files marker saw;
 #   - auto: a missing input is exit 2 next to a clean conversion.
+# and an output folder inside the input folder is never converted again on
+# the next run (Kamino item 190); output names come from the inputs, not
+# their order, nothing is lost to a name another input took, a leftover
+# folder never duplicates a document, and a URL's credentials stay out of
+# the sidecar (Kamino item 204).
 # Converters are stubs on PATH (tests/stubs, tests/stubs-marker).
 set -uo pipefail
 
@@ -60,11 +65,11 @@ mk mx/x/a.pdf; mk mx/y/a.pdf
 out="$T/mk1"
 run local convert --backend marker --output-dir "$out" "$T/mx/x/a.pdf" "$T/mx/y/a.pdf"
 check "two a.pdf: exits 0"                        test "$RC" -eq 0
-check "  out/a's sidecar names x/a.pdf"           field_is "$out/a/provenance.json" source.path "$T/mx/x/a.pdf"
-check "  out/a_2's sidecar names y/a.pdf"         field_is "$out/a_2/provenance.json" source.path "$T/mx/y/a.pdf"
-check "  the command is the batch CLI that ran"   field_has "$out/a/provenance.json" conversion.command "stubs-marker/marker\""
-check "versions include surya-ocr"                field_has "$out/a/provenance.json" versions surya-ocr
-check "  and torch"                               field_has "$out/a/provenance.json" versions torch
+check "  out/x_a_pdf's sidecar names x/a.pdf"     field_is "$out/x_a_pdf/provenance.json" source.path "$T/mx/x/a.pdf"
+check "  out/y_a_pdf's sidecar names y/a.pdf"     field_is "$out/y_a_pdf/provenance.json" source.path "$T/mx/y/a.pdf"
+check "  the command is the batch CLI that ran"   field_has "$out/x_a_pdf/provenance.json" conversion.command "stubs-marker/marker\""
+check "versions include surya-ocr"                field_has "$out/x_a_pdf/provenance.json" versions surya-ocr
+check "  and torch"                               field_has "$out/x_a_pdf/provenance.json" versions torch
 
 mk ms/b.pdf; mk ms/boom.pdf
 out="$T/mk2"; mkdir -p "$out/boom"; echo old > "$out/boom/boom.md"; touch -d '1 hour ago' "$out/boom/boom.md"
@@ -93,6 +98,69 @@ run local convert --backend marker --output-dir "$out" "$T/nest"
 check "a folder: a nested file is converted too"        test -f "$out/deep/deep.md"
 check "  with a sidecar relative to the folder"         field_is "$out/deep/provenance.json" source.relative_path sub/deep.pdf
 check "  and the run exits 0"                           test "$RC" -eq 0
+
+echo
+echo "== 190: an output folder inside the input folder is never an input =="
+sources() { find "$1" -name '*provenance.json' -exec python3 -c 'import json,sys
+for p in sys.argv[1:]: print(json.load(open(p))["source"]["path"])' {} + | sort; }
+mk ri/a.html
+for _ in 1 2 3; do run local convert --backend markitdown --output-dir "$T/ri/md" "$T/ri"; done
+check "markitdown, third run: exits 0"                  test "$RC" -eq 0
+check "  only a.md and its sidecar in the output"       test "$(cd "$T/ri/md" && find . -type f | sort | tr '\n' ' ')" = "./a.md ./a.md.provenance.json "
+check "  every sidecar names the one input"             test "$(sources "$T/ri/md" | uniq)" = "$T/ri/a.html"
+mk rm/a.pdf
+run local convert --backend marker --output-dir "$T/rm/md" "$T/rm"
+printf 'jpeg' > "$T/rm/md/a/_page_0_Picture_1.jpeg"     # what marker extracts beside a.md
+run local convert --backend marker --output-dir "$T/rm/md" "$T/rm"
+check "marker, second run: exits 0"                     test "$RC" -eq 0
+check "  its extracted image was not converted"         test "$(ls "$T/rm/md")" = "a"
+check "  one sidecar, for the input"                    test "$(sources "$T/rm/md")" = "$T/rm/a.pdf"
+mk ra/a.pdf; mk ra/b.html
+run local convert --backend auto --output-dir "$T/ra/md" "$T/ra"
+run local convert --backend auto --output-dir "$T/ra/md" "$T/ra"
+check "auto, second run: exits 0"                       test "$RC" -eq 0
+check "  no sidecar became a document"                  test -z "$(find "$T/ra/md" -name '*provenance.md' -o -name '*provenance_json*')"
+check "  two sidecars, one per input"                   test "$(sources "$T/ra/md" | tr '\n' ' ')" = "$T/ra/a.pdf $T/ra/b.html "
+
+echo
+echo "== 204: names that do not depend on the other inputs, nothing lost =="
+mk nm/x/a.pdf; mk nm/y/a.pdf
+out="$T/nmo"
+run local convert --backend marker --output-dir "$out" "$T/nm"
+mk nm/w/a.pdf
+run local convert --backend marker --output-dir "$out" "$T/nm"
+check "a third a.pdf: y/a.pdf keeps its folder"         field_is "$out/y_a_pdf/provenance.json" source.path "$T/nm/y/a.pdf"
+rm -rf "$T/nm/w"
+run local convert --backend marker --output-dir "$out" "$T/nm"
+check "  removed again: exits 0"                        test "$RC" -eq 0
+check "  no input has two sidecars"                     test -z "$(sources "$out" | uniq -d)"
+check "  the removed input's folder is left alone"      field_is "$out/w_a_pdf/provenance.json" source.path "$T/nm/w/a.pdf"
+rm -rf "$T/nm/x"
+run local convert --backend marker --output-dir "$out" "$T/nm"
+check "one a.pdf left: it is out/a again"               field_is "$out/a/provenance.json" source.path "$T/nm/y/a.pdf"
+check "  and its earlier folder is gone"                test ! -e "$out/y_a_pdf"
+mk old/x/a.pdf; mk old/y/a.pdf
+out="$T/oldo"; mkdir -p "$out/a_2" "$out/a_3"
+for d in a_2 a_3; do printf 'old\n' > "$out/$d/a_2.md"; printf '{"source":{"path":"%s"},"conversion":{"backend":"marker"}}' "$T/old/y/a.pdf" > "$out/$d/provenance.json"; done
+run local convert --backend marker --output-dir "$out" "$T/old"
+check "an order-based a_2/a_3 from before is cleared"   test ! -e "$out/a_2" -a ! -e "$out/a_3"
+check "  one sidecar per input"                         test "$(sources "$out" | tr '\n' ' ')" = "$T/old/x/a.pdf $T/old/y/a.pdf "
+mk co/report.docx; mk co/report.pptx; mk co/report_docx.html
+run local convert --backend markitdown --output-dir "$T/coo" "$T/co"
+check "report.docx/.pptx + report_docx.html: exits 0"   test "$RC" -eq 0
+check "  three outputs"                                 test -f "$T/coo/report_docx.md" -a -f "$T/coo/report_pptx.md" -a -f "$T/coo/report_docx_html.md"
+check "  report_docx.md is the docx"                    field_is "$T/coo/report_docx.md.provenance.json" source.path "$T/co/report.docx"
+mk cm/report.pdf; mk cm/report.docx
+run local convert --backend marker --output-dir "$T/cmo" "$T/cm"
+check "marker, report.pdf + report.docx: exits 0"       test "$RC" -eq 0
+check "  each has its own folder and sidecar"           test "$(sources "$T/cmo" | tr '\n' ' ')" = "$T/cm/report.docx $T/cm/report.pdf "
+run local convert --backend marker --output-dir "$T/cm2" "$T/cm/report.pdf" "$T/cm/report.pdf" "$T/cm"
+check "marker, a file named twice is one input: exit 0" test "$RC" -eq 0
+check "  one folder per document"                       test "$(sources "$T/cm2" | tr '\n' ' ')" = "$T/cm/report.docx $T/cm/report.pdf "
+mk url/doc.pdf
+run local convert --backend marker --output-dir "$T/urlo" "$T/url/doc.pdf" -- --openai_base_url http://u:SECRET@llm.example:8080/v1
+check "a URL's credentials are redacted"                field_lacks "$T/urlo/doc/provenance.json" conversion.command "SECRET"
+check "  its host and path are kept"                    field_has "$T/urlo/doc/provenance.json" conversion.command "llm.example:8080/v1"
 
 echo
 echo "== auto: a missing input next to a clean one is exit 2 =="

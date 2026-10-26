@@ -108,35 +108,9 @@ def scan(args) -> int:
 
 
 def output_names(files, input_root=""):
-    """{file: output path relative to the output folder}, one per input.
-
-    `<stem>.md`, as always - except where several inputs of this run share a
-    stem: in/a/notes.html and in/b/notes.html, or report.docx and report.pptx,
-    all wrote notes.md or report.md, the last one won, and the run still said
-    "4 converted" (Kamino item 126). Every input of such a group gets
-    `<dir>/<stem>_<ext>.md` instead, the directory taken relative to the input
-    folder (or to the group's common parent). The rule depends only on the
-    inputs, so a re-run writes the same names and replaces its own output.
-    Stems are compared case-insensitively: on macOS notes.md and Notes.md are
-    one file.
-    """
-    groups = {}
-    for f in files:
-        groups.setdefault(os.path.splitext(os.path.basename(f))[0].casefold(), []).append(f)
-    names = {}
-    for group in groups.values():
-        if len(group) == 1:
-            f = group[0]
-            names[f] = os.path.splitext(os.path.basename(f))[0] + ".md"
-            continue
-        dirs = [os.path.dirname(os.path.abspath(f)) for f in group]
-        base = os.path.abspath(input_root) if input_root else os.path.commonpath(dirs)
-        for f, d in zip(group, dirs):
-            rel = os.path.relpath(d, base)
-            rel = "" if rel == os.curdir or rel.startswith(os.pardir) else rel
-            stem, ext = os.path.splitext(os.path.basename(f))
-            names[f] = os.path.join(rel, f"{stem}_{ext.lstrip('.')}.md" if ext else f"{stem}.md")
-    return names
+    """{file: output path relative to the output folder}, one per input:
+    common.output_stems plus ".md" (Kamino items 126, 204)."""
+    return {f: n + ".md" for f, n in c.output_stems(files, input_root).items()}
 
 
 def convert(args, open_output=True) -> int:
@@ -172,7 +146,7 @@ def convert(args, open_output=True) -> int:
     # provenance input root.
     if len(paths) == 1 and os.path.isdir(paths[0]):
         input_root = paths[0]
-        paths = c.scan_files(paths[0], c.DEFAULT_DEPTH, EXTS)
+        paths = c.scan_files(paths[0], c.DEFAULT_DEPTH, EXTS, skip=(out_dir,))
         if not paths:
             warn(f"No supported files under {input_root} (markitdown handles: {' '.join(EXTS)}).")
             return EX_NOTHING

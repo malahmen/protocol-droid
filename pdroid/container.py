@@ -68,13 +68,13 @@ def require_image(rt: str):
         error_exit(f"image {IMAGE} is not built — run: protocol-droid.sh container build")
 
 
-def collect(paths):
+def collect(paths, out_dir=""):
     """(files, missing): a file stands for itself, a folder for its convertible
     files (marker's types), all absolute."""
     files, missing = [], 0
     for p in paths:
         if os.path.isdir(p):
-            listed = c.scan_files(p, c.DEFAULT_DEPTH, marker.EXTS)
+            listed = c.scan_files(p, c.DEFAULT_DEPTH, marker.EXTS, skip=(out_dir,))
             if not listed:
                 warn(f"No convertible files under {p}.")
             files += [os.path.join(_abs_dir(os.path.dirname(f) or "."), os.path.basename(f)) for f in listed]
@@ -131,7 +131,7 @@ def convert(args, rt="") -> int:
         error_exit("container convert: give one or more files or folders.")
     rt = runtime(rt)
     require_image(rt)
-    files, missing = collect(paths)
+    files, missing = collect(paths, out_dir)
     if not files:
         return EX_NO_INPUT if missing else EX_NOTHING
     try:
