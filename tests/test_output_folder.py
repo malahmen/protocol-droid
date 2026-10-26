@@ -99,8 +99,10 @@ class MarkitdownNames(unittest.TestCase):
         self.assertEqual(set(n.values()), {"report_docx.md", "report_pptx.md"})
 
     def test_case_variants_are_one_stem(self):
+        # Exact names: two distinct values alone (Notes.md, notes.md) would
+        # pass without the case-folding, and collide on macOS (Kamino 204).
         n = md.output_names(["/i/Notes.html", "/i/notes.docx"], "")
-        self.assertEqual(len(set(n.values())), 2)
+        self.assertEqual(n, {"/i/Notes.html": "Notes_html.md", "/i/notes.docx": "notes_docx.md"})
 
 
 if __name__ == "__main__":

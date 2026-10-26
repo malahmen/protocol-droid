@@ -219,25 +219,79 @@ def scan_files(directory: str, depth: int, exts, skip=()) -> list:
     return sorted(found)
 
 
-def link_into_tmp(files):
-    """Symlink files into a fresh temp dir (collision-safe names).
+def output_stems(files, input_root="", flat=False):
+    """{file: output stem}, one per input, decided by the inputs alone.
 
-    Returns (dir, [(file, staged name)]): the second a.pdf is staged as
-    a_2.pdf, and whatever reads the output back has to look for a_2, not a
-    (Kamino item 127).
+    `<stem>`, as always - except where several inputs share a stem: in/a/notes.html
+    and in/b/notes.html, or report.docx and report.pptx (Kamino item 126).
+    Every input of such a group gets `<dir>/<stem>_<ext>`, the directory taken
+    relative to the input folder (or to the group's common parent); `flat`
+    joins it with "_" instead, for marker's one-level output folder. Stems are
+    compared case-insensitively: on macOS notes.md and Notes.md are one file.
+
+    A plain name can still meet another input's `<stem>_<ext>` name
+    (report_docx.html next to report.docx and report.pptx); that input takes
+    the `<stem>_<ext>` form as well (Kamino item 204). The rule never looks at
+    the order of the inputs, so a re-run writes the same names. A clash that
+    survives this (Notes.HTML and notes.html on a case-sensitive disk) is left
+    for the caller to refuse.
+    """
+    def split(f):
+        return os.path.splitext(os.path.basename(f))
+
+    def suffixed(f, rel):
+        stem, ext = split(f)
+        name = f"{stem}_{ext.lstrip('.')}" if ext else stem
+        if not rel:
+            return name
+        return "_".join(rel.split(os.sep) + [name]) if flat else os.path.join(rel, name)
+
+    groups = {}
+    for f in files:
+        groups.setdefault(split(f)[0].casefold(), []).append(f)
+    names, plain = {}, []
+    for group in groups.values():
+        if len(group) == 1:
+            names[group[0]] = split(group[0])[0]
+            plain.append(group[0])
+            continue
+        dirs = [os.path.dirname(os.path.abspath(f)) for f in group]
+        base = os.path.abspath(input_root) if input_root else os.path.commonpath(dirs)
+        for f, d in zip(group, dirs):
+            rel = os.path.relpath(d, base)
+            names[f] = suffixed(f, "" if rel == os.curdir or rel.startswith(os.pardir) else rel)
+    taken = {}
+    for f, n in names.items():
+        taken.setdefault(n.casefold(), []).append(f)
+    for f in plain:
+        if len(taken[names[f].casefold()]) > 1 and split(f)[1]:
+            names[f] = suffixed(f, "")
+    return names
+
+
+def name_clashes(names) -> set:
+    """The inputs whose output name another input of the run also has."""
+    seen = {}
+    for f, n in names.items():
+        seen.setdefault(n.casefold(), []).append(f)
+    return {f for group in seen.values() if len(group) > 1 for f in group}
+
+
+def link_into_tmp(files, names):
+    """Symlink files into a fresh temp dir, each as <names[file]><its ext>.
+
+    Returns (dir, [(file, staged name)]). marker names a document's output
+    folder after the name it was given, so the staged name IS the output
+    folder: it comes from output_stems, which depends on the inputs and not on
+    their order. Order-based a_2, a_3 moved from one input to the next as
+    inputs came and went (Kamino items 127, 204).
     """
     tmp = tempfile.mkdtemp(prefix="pd-sel.", dir=os.environ.get("TMPDIR") or None)
     staged = []
     for f in files:
         if not os.path.isfile(f):
             continue
-        name = os.path.basename(f)
-        if os.path.exists(os.path.join(tmp, name)):
-            stem, ext = os.path.splitext(name)
-            i = 2
-            while os.path.exists(os.path.join(tmp, f"{stem}_{i}{ext}")):
-                i += 1
-            name = f"{stem}_{i}{ext}"
+        name = names[f] + os.path.splitext(f)[1]
         os.symlink(os.path.abspath(f), os.path.join(tmp, name))
         staged.append((f, name))
     return tmp, staged
