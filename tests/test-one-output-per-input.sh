@@ -104,7 +104,7 @@ echo "== 190: an output folder inside the input folder is never an input =="
 sources() { find "$1" -name '*provenance.json' -exec python3 -c 'import json,sys
 for p in sys.argv[1:]: print(json.load(open(p))["source"]["path"])' {} + | sort; }
 mk ri/a.html
-for i in 1 2 3; do run local convert --backend markitdown --output-dir "$T/ri/md" "$T/ri"; done
+for _ in 1 2 3; do run local convert --backend markitdown --output-dir "$T/ri/md" "$T/ri"; done
 check "markitdown, third run: exits 0"                  test "$RC" -eq 0
 check "  only a.md and its sidecar in the output"       test "$(cd "$T/ri/md" && find . -type f | sort | tr '\n' ' ')" = "./a.md ./a.md.provenance.json "
 check "  every sidecar names the one input"             test "$(sources "$T/ri/md" | uniq)" = "$T/ri/a.html"
