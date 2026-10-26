@@ -177,14 +177,25 @@ def pkg_version(pkg: str) -> str:
 
 # --- files --------------------------------------------------------------------
 
-def scan_files(directory: str, depth: int, exts) -> list:
+def _is_sidecar(name: str) -> bool:
+    """One of our provenance sidecars (provenance.py's is_provenance)."""
+    return name == "provenance.json" or name.endswith(".provenance.json")
+
+
+def scan_files(directory: str, depth: int, exts, skip=()) -> list:
     """Convertible files under `directory`, `depth` levels deep, sorted.
 
     Matches extensions case-insensitively and skips generated output and tool
     clutter, as `find -maxdepth` did. An unreadable subfolder is skipped, not
     fatal. Paths are returned as `directory/...`, without a leading "./".
+
+    `skip` names folders never to descend into, compared by real path: the
+    run's own output folder. Inside the input folder it was converted again
+    on the next run - markitdown's sidecars as documents, marker's extracted
+    images too (Kamino item 190). Provenance sidecars are never inputs.
     """
     wanted = {e.lower() for e in exts}
+    skip_real = {os.path.realpath(d) for d in skip if d}
     found = []
     base_depth = directory.rstrip(os.sep).count(os.sep)
 
@@ -195,8 +206,12 @@ def scan_files(directory: str, depth: int, exts) -> list:
         # find -maxdepth N: the folder itself is depth 0, its files depth 1,
         # so files are listed down to level N-1 and nothing below is walked.
         level = root.rstrip(os.sep).count(os.sep) - base_depth
-        dirs[:] = [] if level >= depth - 1 else [d for d in dirs if d not in _SKIP_PARTS]
+        dirs[:] = [] if level >= depth - 1 else [
+            d for d in dirs
+            if d not in _SKIP_PARTS and os.path.realpath(os.path.join(root, d)) not in skip_real]
         for name in files:
+            if _is_sidecar(name):
+                continue
             ext = os.path.splitext(name)[1].lower().lstrip(".")
             if ext in wanted:
                 path = os.path.join(root, name)

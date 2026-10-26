@@ -172,7 +172,7 @@ def convert(args, open_output=True) -> int:
     # provenance input root.
     if len(paths) == 1 and os.path.isdir(paths[0]):
         input_root = paths[0]
-        paths = c.scan_files(paths[0], c.DEFAULT_DEPTH, EXTS)
+        paths = c.scan_files(paths[0], c.DEFAULT_DEPTH, EXTS, skip=(out_dir,))
         if not paths:
             warn(f"No supported files under {input_root} (markitdown handles: {' '.join(EXTS)}).")
             return EX_NOTHING

@@ -304,15 +304,16 @@ def _provenance(out_dir, root, versions, fmt, started, staged, command, skip_exi
     return bad
 
 
-def _inputs(paths):
+def _inputs(paths, out_dir=""):
     """The files a batch stands for: a folder for its convertible files, as
     deep as scan goes, and a file for itself. marker's batch CLI lists only
     the top of the folder it is given (os.listdir, marker-pdf 2.0.0) while
     provenance walked three levels (Kamino item 128), so the batch is staged
-    from this list and both see the same files."""
+    from this list and both see the same files. The output folder is never
+    an input (Kamino item 190)."""
     files = []
     for p in paths:
-        files += c.scan_files(p, c.DEFAULT_DEPTH, EXTS) if os.path.isdir(p) else [p]
+        files += c.scan_files(p, c.DEFAULT_DEPTH, EXTS, skip=(out_dir,)) if os.path.isdir(p) else [p]
     return files
 
 
@@ -359,7 +360,7 @@ def convert(args, open_output=True) -> int:
     paths = present
 
     input_root = paths[0] if len(paths) == 1 and os.path.isdir(paths[0]) else ""
-    files = _inputs(paths)
+    files = _inputs(paths, out_dir)
     if not files:
         warn(f"No supported files in {' '.join(paths)} (marker handles: {' '.join(EXTS)}).")
         return EX_NO_INPUT if missing else EX_NOTHING

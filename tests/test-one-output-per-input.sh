@@ -6,6 +6,8 @@
 #     ignores an output folder an earlier run left, records the argv that ran
 #     (redacted) and the OCR/torch versions, and sees the files marker saw;
 #   - auto: a missing input is exit 2 next to a clean conversion.
+# and an output folder inside the input folder is never converted again on
+# the next run (Kamino item 190).
 # Converters are stubs on PATH (tests/stubs, tests/stubs-marker).
 set -uo pipefail
 
@@ -93,6 +95,29 @@ run local convert --backend marker --output-dir "$out" "$T/nest"
 check "a folder: a nested file is converted too"        test -f "$out/deep/deep.md"
 check "  with a sidecar relative to the folder"         field_is "$out/deep/provenance.json" source.relative_path sub/deep.pdf
 check "  and the run exits 0"                           test "$RC" -eq 0
+
+echo
+echo "== 190: an output folder inside the input folder is never an input =="
+sources() { find "$1" -name '*provenance.json' -exec python3 -c 'import json,sys
+for p in sys.argv[1:]: print(json.load(open(p))["source"]["path"])' {} + | sort; }
+mk ri/a.html
+for i in 1 2 3; do run local convert --backend markitdown --output-dir "$T/ri/md" "$T/ri"; done
+check "markitdown, third run: exits 0"                  test "$RC" -eq 0
+check "  only a.md and its sidecar in the output"       test "$(cd "$T/ri/md" && find . -type f | sort | tr '\n' ' ')" = "./a.md ./a.md.provenance.json "
+check "  every sidecar names the one input"             test "$(sources "$T/ri/md" | uniq)" = "$T/ri/a.html"
+mk rm/a.pdf
+run local convert --backend marker --output-dir "$T/rm/md" "$T/rm"
+printf 'jpeg' > "$T/rm/md/a/_page_0_Picture_1.jpeg"     # what marker extracts beside a.md
+run local convert --backend marker --output-dir "$T/rm/md" "$T/rm"
+check "marker, second run: exits 0"                     test "$RC" -eq 0
+check "  its extracted image was not converted"         test "$(ls "$T/rm/md")" = "a"
+check "  one sidecar, for the input"                    test "$(sources "$T/rm/md")" = "$T/rm/a.pdf"
+mk ra/a.pdf; mk ra/b.html
+run local convert --backend auto --output-dir "$T/ra/md" "$T/ra"
+run local convert --backend auto --output-dir "$T/ra/md" "$T/ra"
+check "auto, second run: exits 0"                       test "$RC" -eq 0
+check "  no sidecar became a document"                  test -z "$(find "$T/ra/md" -name '*provenance.md' -o -name '*provenance_json*')"
+check "  two sidecars, one per input"                   test "$(sources "$T/ra/md" | tr '\n' ' ')" = "$T/ra/a.pdf $T/ra/b.html "
 
 echo
 echo "== auto: a missing input next to a clean one is exit 2 =="
