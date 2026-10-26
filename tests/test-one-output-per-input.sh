@@ -154,6 +154,9 @@ mk cm/report.pdf; mk cm/report.docx
 run local convert --backend marker --output-dir "$T/cmo" "$T/cm"
 check "marker, report.pdf + report.docx: exits 0"       test "$RC" -eq 0
 check "  each has its own folder and sidecar"           test "$(sources "$T/cmo" | tr '\n' ' ')" = "$T/cm/report.docx $T/cm/report.pdf "
+run local convert --backend marker --output-dir "$T/cm2" "$T/cm/report.pdf" "$T/cm/report.pdf" "$T/cm"
+check "marker, a file named twice is one input: exit 0" test "$RC" -eq 0
+check "  one folder per document"                       test "$(sources "$T/cm2" | tr '\n' ' ')" = "$T/cm/report.docx $T/cm/report.pdf "
 mk url/doc.pdf
 run local convert --backend marker --output-dir "$T/urlo" "$T/url/doc.pdf" -- --openai_base_url http://u:SECRET@llm.example:8080/v1
 check "a URL's credentials are redacted"                field_lacks "$T/urlo/doc/provenance.json" conversion.command "SECRET"

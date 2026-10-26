@@ -369,10 +369,14 @@ def _inputs(paths, out_dir=""):
     the top of the folder it is given (os.listdir, marker-pdf 2.0.0) while
     provenance walked three levels (Kamino item 128), so the batch is staged
     from this list and both see the same files. The output folder is never
-    an input (Kamino item 190)."""
-    files = []
+    an input (Kamino item 190), and a file named twice is one input: two
+    inputs with one name are refused (Kamino item 204)."""
+    files, seen = [], set()
     for p in paths:
-        files += c.scan_files(p, c.DEFAULT_DEPTH, EXTS, skip=(out_dir,)) if os.path.isdir(p) else [p]
+        for f in c.scan_files(p, c.DEFAULT_DEPTH, EXTS, skip=(out_dir,)) if os.path.isdir(p) else [p]:
+            if os.path.abspath(f) not in seen:
+                seen.add(os.path.abspath(f))
+                files.append(f)
     return files
 
 
