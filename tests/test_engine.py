@@ -120,6 +120,24 @@ class Cli(unittest.TestCase):
         self.assertIn("unknown --backend", self.run_engine("local", "convert", "--backend", "x", "a").stderr)
         self.assertIn("unknown command", self.run_engine("local", "frobnicate", "--backend", "markitdown").stderr)
 
+    def test_double_dash_ends_the_options(self):
+        """A folder named -notes is a path after `--`, and an unknown flag
+        without it, as before (Kamino 234)."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        os.makedirs(os.path.join(tmp, "-notes"))
+        open(os.path.join(tmp, "-notes", "a.pdf"), "w").close()
+        for backend in ("marker", "markitdown"):
+            res = subprocess.run([sys.executable, os.path.join(ROOT, "protocol_droid.py"), "local", "scan",
+                                  "--backend", backend, "--depth", "1", "--", "-notes"],
+                                 capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=tmp)
+            self.assertEqual((res.returncode, res.stdout.strip()), (0, "-notes/a.pdf"), (backend, res.stderr))
+            res = subprocess.run([sys.executable, os.path.join(ROOT, "protocol_droid.py"), "local", "scan",
+                                  "--backend", backend, "-notes"],
+                                 capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=tmp)
+            self.assertEqual(res.returncode, 1, backend)
+            self.assertIn(f"{backend} scan: unknown flag: -notes", res.stderr)
+
     def test_the_launcher_runs_the_same_engine(self):
         bash = shutil.which("bash")
         if not bash:

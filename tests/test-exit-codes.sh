@@ -177,5 +177,41 @@ check "and it says provenance is why" in_err 'provenance'
 check "counted as without provenance" in_err 'without provenance'
 
 echo
+echo "== -- ends the options: a file named -x.md converts (Kamino 234) =="
+# Relative names, run from their folder: the case scomp-link hits when a scan
+# or a typed path starts with "-". After `--` every argument is a path; before
+# it a "-" argument is still an unknown flag, exactly as it was.
+mkdir -p "$T/dash/-notes"
+printf 'x\n' > "$T/dash/-x.docx"; printf 'w\n' > "$T/dash/--weird.pdf"; printf 'n\n' > "$T/dash/-notes/n.docx"
+cd "$T/dash" || exit 1
+run local convert --backend markitdown --output-dir out-md -- -x.docx --weird.pdf
+check "markitdown: exits 0"                          test "$RC" -eq 0
+check "markitdown: -x.md is -x.docx's"               grep -qxF '# converted -x.docx' out-md/-x.md
+check "markitdown: --weird.md is --weird.pdf's"      grep -qxF '# converted --weird.pdf' out-md/--weird.md
+check "markitdown: a sidecar naming the file"        bash -c '[[ "$1" == */dash/-x.docx ]]' _ "$(field out-md/-x.md.provenance.json source.path)"
+run local convert --backend markitdown --output-dir out-md2 -- -x.docx -- --use-plugins
+check "a second -- still forwards markitdown flags"  test "$RC" -eq 0
+check "  and markitdown got them"                    bash -c 'python3 -c "
+import json,sys
+sys.exit(0 if \"--use-plugins\" in json.load(open(sys.argv[1]))[\"conversion\"][\"command\"] else 1)" "$1"' _ out-md2/-x.md.provenance.json
+run local convert --backend markitdown --output-dir out-md3 -- -notes
+check "a folder named -notes converts"               grep -qxF '# converted n.docx' out-md3/n.md
+PATH="${TEST_DIR}/stubs-marker:$PATH" run local convert --output-dir out-mk -- --weird.pdf
+check "marker: exits 0"                              test "$RC" -eq 0
+check "marker: --weird/--weird.md written"           test -f out-mk/--weird/--weird.md
+run local convert --backend auto --output-dir out-auto -- -x.docx
+check "auto: exits 0"                                test "$RC" -eq 0
+check "auto: -x.md is -x.docx's"                     grep -qxF '# converted -x.docx' out-auto/-x.md
+run local convert --backend markitdown --output-dir out-old -x.docx
+check "without --: -x.docx is still an unknown flag" test "$RC" -eq 1
+check "  with the same message"                      in_err 'markitdown convert: unknown flag: -x.docx \(forward markitdown flags after --\)'
+check "  and nothing was written"                    test ! -e out-old/-x.md
+run local convert --backend auto --output-dir out-old -x.docx
+check "auto without --: still refused"               in_err 'auto convert: unsupported flag in auto mode: -x.docx'
+PATH="${TEST_DIR}/stubs-marker:$PATH" run local convert --output-dir out-old --weird.pdf
+check "marker without --: still an unknown flag"     in_err 'marker convert: unknown flag: --weird.pdf'
+cd - >/dev/null || exit 1
+
+echo
 if (( FAILS )); then echo "exit-codes: ${FAILS} check(s) failed"; exit 1; fi
 echo "exit-codes: all checks passed"

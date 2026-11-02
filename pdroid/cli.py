@@ -22,28 +22,32 @@ LOCAL — run a converter on this machine (isolated in a pipx environment).
 
   marker (default) — datalab-to/marker; high-fidelity PDF/OCR/layout (heavy):
     setup [--upgrade] [--no-llama]   install/upgrade marker + OCR backend
-    scan [--depth N] DIR             list convertible files
+    scan [--depth N] [--] DIR        list convertible files
     convert [--output-format F] [--output-dir D] [--page-range R] [--workers N]
-            PATH... [-- <marker args…>]      one file, several files, or a folder
+            [--] PATH... [-- <marker args…>]   one file, several files, or a folder
     status | gui | server | clear-cache --yes | uninstall --yes
 
   markitdown — Microsoft markitdown; fast, broad formats (light):
     setup [--extras all|pdf,docx,…] [--upgrade]
-    scan [--depth N] DIR
-    convert [--output-dir D] PATH... [-- <markitdown args…>]   (e.g. --use-plugins, -d, -e URL)
+    scan [--depth N] [--] DIR
+    convert [--output-dir D] [--no-clobber] [--] PATH... [-- <markitdown args…>]
+                                     (markitdown args e.g. --use-plugins, -d, -e URL)
     status | install-plugin <pip-pkg> | uninstall --yes
 
   auto — convert only; routes PDF/images -> marker, everything else -> markitdown:
-    convert [--output-dir D] PATH...
+    convert [--output-dir D] [--] PATH...
 
   convert PATH rules: one file -> that file; a folder -> its convertible files;
-  several files -> batch. marker/markitdown feature flags go after '--'.
+  several files -> batch. A '--' before the first PATH ends the options: every
+  argument after it is a path, even one starting with '-' (-- -x.md). A '--'
+  after a PATH starts the marker/markitdown feature flags (not in auto):
+    convert --backend markitdown -- -x.md --weird.pdf -- --use-plugins
 
 CONTAINER — marker from the service image, run once on local files. Nothing is
   installed on this host; the models download once into a named volume.
   build                                       build the image (same as service build)
-  convert [--output-format F] [--output-dir D] [--page-range R] [--force-ocr] PATH...
-  bench [--runs N] [--report FILE] [--page-range R] [--force-ocr] [--no-cold] PATH...
+  convert [--output-format F] [--output-dir D] [--page-range R] [--force-ocr] [--] PATH...
+  bench [--runs N] [--report FILE] [--page-range R] [--force-ocr] [--no-cold] [--] PATH...
                                               the per-file overhead (measured) vs each warm document,
                                               per path (text / OCR); a JSON report (default
                                               ./marker-bench-<host>-<time>.json)
@@ -72,14 +76,18 @@ def _ext(path: str) -> str:
 
 
 def auto_convert(args) -> int:
-    out_dir, paths = c.DEFAULT_OUTPUT_DIR, []
+    out_dir, paths, only_paths = c.DEFAULT_OUTPUT_DIR, [], False
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--output-dir":
-            out_dir = args[i + 1]; i += 2
+        if only_paths:
+            paths.append(a); i += 1
         elif a == "--":
-            i += 1        # no per-tool passthrough in auto (backends differ)
+            # End of options: everything after it is a path, even "-x.md"
+            # (Kamino 234). No per-tool passthrough in auto (backends differ).
+            only_paths = True; i += 1
+        elif a == "--output-dir":
+            out_dir = args[i + 1]; i += 2
         elif a.startswith("-"):
             error_exit(f"auto convert: unsupported flag in auto mode: {a} (pick --backend marker|markitdown for tool flags)")
         else:
@@ -110,10 +118,10 @@ def auto_convert(args) -> int:
     rc = EX_OK
     if m_files:
         info(f"auto: {len(m_files)} file(s) → marker")
-        rc = worse(rc, _run(marker.convert, ["--output-dir", out_dir, *m_files]))
+        rc = worse(rc, _run(marker.convert, ["--output-dir", out_dir, "--", *m_files]))
     if d_files:
         info(f"auto: {len(d_files)} file(s) → markitdown")
-        rc = worse(rc, _run(markitdown.convert, ["--output-dir", out_dir, *d_files]))
+        rc = worse(rc, _run(markitdown.convert, ["--output-dir", out_dir, "--", *d_files]))
     if not m_files and not d_files:
         warn("auto: nothing to convert.")
         return EX_NO_INPUT if missing else EX_NOTHING
