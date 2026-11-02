@@ -221,10 +221,14 @@ def setup(args) -> int:
 
 
 def scan(args) -> int:
-    depth, directory = c.DEFAULT_DEPTH, ""
+    depth, directory, only_paths = c.DEFAULT_DEPTH, "", False
     it = iter(args)
     for a in it:
-        if a == "--depth":
+        if only_paths:
+            directory = a
+        elif a == "--":
+            only_paths = True     # end of options: what follows is the folder
+        elif a == "--depth":
             depth = int(next(it, c.DEFAULT_DEPTH))
         elif a.startswith("-"):
             error_exit(f"marker scan: unknown flag: {a}")
@@ -382,11 +386,19 @@ def _inputs(paths, out_dir=""):
 
 def convert(args, open_output=True) -> int:
     out_fmt, out_dir, workers, page_range = "markdown", c.DEFAULT_OUTPUT_DIR, "", ""
-    paths, extra = [], []
+    paths, extra, only_paths = [], [], False
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--output-format":
+        # A `--` before any path ends the options: what follows is a path, even
+        # "-x.pdf" (Kamino 234). A `--` after a path starts marker's own flags.
+        if a == "--" and not paths and not only_paths:
+            only_paths = True; i += 1
+        elif a == "--":
+            extra += args[i + 1:]; break
+        elif only_paths:
+            paths.append(a); i += 1
+        elif a == "--output-format":
             out_fmt = args[i + 1]; i += 2
         elif a == "--output-dir":
             out_dir = args[i + 1]; i += 2
@@ -394,8 +406,6 @@ def convert(args, open_output=True) -> int:
             workers = args[i + 1]; i += 2
         elif a == "--page-range":
             page_range = args[i + 1]; i += 2
-        elif a == "--":
-            extra += args[i + 1:]; break
         elif a.startswith("-"):
             error_exit(f"marker convert: unknown flag: {a} (forward marker flags after --)")
         else:
@@ -447,7 +457,7 @@ def convert(args, open_output=True) -> int:
                 extra += ["--page_range", page_range]
             binary = c.resolve_bin(PKG, "marker_single") or error_exit("marker_single not found — run setup.")
             # What ran is what is recorded - this argv, not a rebuilt one.
-            cmd = [binary, files[0], "--output_format", out_fmt, "--output_dir", out_dir, *extra]
+            cmd = [binary, c.operand(files[0]), "--output_format", out_fmt, "--output_dir", out_dir, *extra]
             staged = [(files[0], os.path.basename(files[0]))]
             info(f"Converting {files[0]} → {out_fmt} in {out_dir}/")
         else:

@@ -136,6 +136,16 @@ def pipx_venvs_dir():
         or os.path.join(os.path.expanduser("~"), ".local", "pipx", "venvs")
 
 
+def operand(path: str) -> str:
+    """A path a converter's own CLI cannot read as one of its flags.
+
+    `-- -x.md` gets the name past protocol-droid's parser (Kamino 234), but
+    markitdown and marker_single parse their argv too: "-x.md" there is an
+    unknown option. "./-x.md" is the same file and is not.
+    """
+    return "./" + path if path.startswith("-") else path
+
+
 def resolve_bin(pkg: str, binary: str):
     """A runnable path for a CLI: PATH first, else the package's pipx venv."""
     found = shutil.which(binary)
@@ -345,18 +355,19 @@ def provenance_write(out_folder, src, backend, version, started, finished, fmt,
     if module is None:
         warn(f"provenance: {path} is missing — no sidecar written for {src}.")
         return False
-    args = ["--source", src, "--output-dir", out_folder, "--backend", backend,
-            "--started", str(started), "--finished", str(finished)]
-    for v in versions:
-        args += ["--version", v]
+    # --opt=value, never "--opt value": a value starting with "-" (a file
+    # named -x.docx, a folder -notes) is then still the value, not an option
+    # argparse refuses (Kamino 234).
+    args = [f"--source={src}", f"--output-dir={out_folder}", f"--backend={backend}",
+            f"--started={started}", f"--finished={finished}"]
+    args += [f"--version={v}" for v in versions]
     if fmt:
-        args += ["--output-format", fmt]
+        args.append(f"--output-format={fmt}")
     if root:
-        args += ["--input-root", root]
+        args.append(f"--input-root={root}")
     if name:
-        args += ["--name", name]
-    for o in outputs or []:
-        args += ["--output", o]
+        args.append(f"--name={name}")
+    args += [f"--output={o}" for o in outputs or []]
     if command:
         args += ["--command"] + list(command)   # argparse REMAINDER: last
     try:

@@ -66,9 +66,11 @@ protocol-droid.sh local setup                       # install marker + OCR backe
 protocol-droid.sh local setup --upgrade             # update marker
 protocol-droid.sh local setup --no-llama            # skip the llama-server OCR backend
 protocol-droid.sh local scan ./docs --depth 2       # list convertible files (default depth 3)
+protocol-droid.sh local scan --depth 2 -- -notes    # a folder whose name starts with -
 protocol-droid.sh local convert report.pdf          # one file -> ./converted
 protocol-droid.sh local convert ./docs --output-format json --workers 4
 protocol-droid.sh local convert a.pdf b.docx        # several files (batch, models load once)
+protocol-droid.sh local convert -- -x.pdf --weird.pdf   # after --, every argument is a path
 protocol-droid.sh local status                      # version, torch device, OCR backend, caches
 protocol-droid.sh local gui                         # marker's Streamlit GUI
 protocol-droid.sh local server                      # marker's FastAPI server
@@ -80,7 +82,7 @@ protocol-droid.sh local convert report.pdf -- --force_ocr \
 
 marker `convert` flags: `--output-format markdown|json|html|chunks`,
 `--output-dir`, `--page-range` (single file), `--workers` (batch). Anything after
-`--` is forwarded to marker (LLM-assist, force OCR, …) — including the LLM
+a `--` that follows a path is forwarded to marker (LLM-assist, force OCR, …) — including the LLM
 options, since the local backend hands marker's flags straight through and has
 no deployment config of its own. A folder means its convertible files as deep
 as `scan` goes (3 levels), staged for marker's batch CLI - which on its own
@@ -126,6 +128,7 @@ protocol-droid.sh local scan    --backend markitdown ./corpus --depth 1
 protocol-droid.sh local convert --backend markitdown talk.mp3     # -> ./converted/talk.md
 protocol-droid.sh local convert --backend markitdown ./corpus     # a whole folder
 protocol-droid.sh local convert --backend markitdown scan.pdf -- -d -e "$ENDPOINT"   # Azure Doc Intelligence
+protocol-droid.sh local convert --backend markitdown -- -x.md -- --use-plugins     # a file named -x.md, then markitdown's flags
 protocol-droid.sh local status  --backend markitdown
 protocol-droid.sh local install-plugin --backend markitdown markitdown-sample-plugin
 protocol-droid.sh local uninstall --backend markitdown --yes
@@ -149,6 +152,25 @@ The rule: **PDF and images** (`pdf png jpg jpeg tiff tif webp gif bmp`) go to
 audio, …) goes to **markitdown**. Both write into the same `--output-dir`. No
 per-tool flags after `--` in auto mode — pick a backend explicitly for those.
 
+**`--` and paths that start with `-`.** Every command that takes paths
+(`local convert` and `local scan` for each backend, `container convert`,
+`container bench`) reads a `--` **before the first path** as the end of the
+options: every argument after it is a path, even `-x.md` or `--weird.pdf`.
+Without it such a name is still refused as an unknown flag, as it always was.
+In `local convert --backend marker|markitdown` a `--` **after a path** keeps its
+meaning — the converter's own flags follow — so both fit on one line:
+
+```sh
+protocol-droid.sh local convert --backend markitdown --output-dir out -- -x.md --weird.pdf
+protocol-droid.sh local convert --backend markitdown -- -x.md -- --use-plugins
+protocol-droid.sh local convert report.pdf -- --force_ocr            # unchanged
+```
+
+The path also reaches the converter safely: protocol-droid hands markitdown
+and `marker_single` `./-x.md`, never `-x.md` (the same file, which their own
+option parsers would refuse), and container mode passes the files to the
+image's `cli.py` after a `--` of its own.
+
 Both backends need **Python 3.10–3.13** (3.14 is refused: marker/torch and
 onnxruntime don't support it yet; 3.12 is preferred, then 3.11, 3.13, 3.10 — a
 plain `python3` in that range also works) and **pipx** (installed by `setup`);
@@ -169,6 +191,7 @@ conversion writes the same folders and the same provenance sidecar as a queued o
 protocol-droid.sh container build                         # the image (same as `service build`)
 protocol-droid.sh container convert ./docs                # folders, files, or both -> ./converted
 protocol-droid.sh container convert --output-format json --page-range 0-4 report.pdf
+protocol-droid.sh container convert -- -x.pdf             # after --, every argument is a path
 protocol-droid.sh container bench ./sample-pdfs           # the per-file overhead vs each warm document
 protocol-droid.sh container status
 ```
@@ -597,9 +620,9 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_llm_config.py` | 12 | which LLM `use_llm` reaches, and that a request cannot name one |
 | `tests/test_provenance.py` | 41 | what the sidecar records, what it redacts (credential-named values, a URL's `user:password@`), and its script interface |
 | `tests/test_local_convert.py` | 13 | local runs in process against the stubs: the guard that fails an input whose output another already wrote, case-folded and order-free output names, the output folder and sidecars never scanned (also by `enqueue_batch.py`, with rq), a client clock ahead of the output disk's, earlier copies of a document removed |
-| `tests/test-exit-codes.sh` | 50 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh` |
-| `tests/test_cli.py` | 29 | the container entry: `bench`'s measurements (the overhead cold minus warm and its order, per-path throughput, per-document saving, page ranges cut per document, prompt recall off), `convert`'s batch and exit codes - marker replaced, never loaded |
-| `tests/test-container.sh` | 31 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host, the input tree kept, the runtime's own exit codes |
+| `tests/test-exit-codes.sh` | 66 | exit codes, overwrite behaviour and sidecars, end to end through `protocol-droid.sh`; `--` ending the options for files named `-x.docx`/`--weird.pdf` and a folder `-notes` (markitdown, marker, auto), a second `--` still forwarding converter flags, the old unknown-flag error without it |
+| `tests/test_cli.py` | 31 | the container entry: `bench`'s measurements (the overhead cold minus warm and its order, per-path throughput, per-document saving, page ranges cut per document, prompt recall off), `convert`'s batch and exit codes, a file named `-x.pdf` after `--` - marker replaced, never loaded |
+| `tests/test-container.sh` | 39 | container mode against a stub runtime: which files a folder means, read-only inputs at their own paths, the model volume, podman's uid mapping, the bench report written on the host, the input tree kept, the runtime's own exit codes, `--` before `-x.pdf` (and handed on to `cli.py`) |
 | `tests/test-one-output-per-input.sh` | 62 | every input of a run gets its own output or fails: markitdown inputs sharing a stem; local marker (stubs in `tests/stubs-marker`) with two `a.pdf`, a stale output folder, `--skip_existing`, the argv and versions recorded and redacted, nested files in a folder; an output folder inside the input folder, run again (markitdown, marker, auto); inputs added and removed, a leftover `a_2`/`a_3`, `report_docx.html` next to `report.docx`, a URL with credentials, a file named twice; auto's missing-input code |
 | `tests/test-k8s-storage.sh` | 22 | the volume claims `service deploy --target k8s` renders: access mode and storage class from the environment or `.env` |
 | `tests/test_job_timeout.py` | 18 | each job's timeout sized from its pages (a 166-page scan no longer killed at an hour), and the worker's warm-up |
@@ -608,7 +631,7 @@ predictable `.md` and fails on any file whose name contains `boom`.
 | `tests/test_api.py` | 7 | what the API refuses before anything is queued (a folder, a missing file), and its docs behind the token - needs fastapi and rq (`requirements-ci.txt`) |
 | `tests/test_worker_guard.py` | 18 | the worker runs only `tasks.convert_document`: hostile jobs refused - another function, a pickled job, callbacks (also one planted in the started registry, which RQ's cleanup reaches), webhooks, marker classes in the options, paths outside the roots - against a real Redis (`PROTOCOL_DROID_TEST_REDIS_URL`) |
 | `tests/test_k8s_image.py` | 10 | `service deploy --target k8s` pins the image to its build ID, so a rebuild rolls out |
-| `tests/test_engine.py` | 9 | the folder scanner, output naming and exit-code severity, pinned to v1.0.0's bash answers |
+| `tests/test_engine.py` | 10 | the folder scanner, output naming and exit-code severity, pinned to v1.0.0's bash answers; `scan -- -notes` |
 
 `tests/test-exit-codes.sh` is the one that would have caught this round's bugs:
 run against the previous commit it fails 22 of its checks. Every case in it is

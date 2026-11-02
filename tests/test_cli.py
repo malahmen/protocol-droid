@@ -315,5 +315,31 @@ class Convert(Base):
         self.assertEqual(self.converted, [])
 
 
+class EndOfOptions(Base):
+    """`--` before the files (Kamino 234): container mode puts one there, so a
+    file named -x.pdf reaches convert_document instead of argparse's
+    unknown-option error. argparse already honoured it; this pins it."""
+    def test_a_dash_named_file_after_double_dash(self):
+        os.makedirs(os.path.join(self.tmp, "o"))
+        for name in ("-x.pdf", "--weird.pdf"):
+            with open(os.path.join(self.tmp, name), "wb") as fh:
+                fh.write(b"x")
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            rc, _, _ = self.run_cli("convert", "--output-dir", "o", "--", "-x.pdf", "--weird.pdf")
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(rc, 0)
+        self.assertEqual([os.path.basename(f) for f, _, _ in self.converted], ["-x.pdf", "--weird.pdf"])
+
+    def test_without_it_a_dash_named_file_is_still_an_option(self):
+        with redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as ex:
+            cli.main(["convert", "--output-dir", self.tmp, "-x.pdf"])
+        self.assertEqual(ex.exception.code, 2)
+        self.assertIn("cli.py convert: error:", err.getvalue())
+        self.assertEqual(self.converted, [])
+
+
 if __name__ == "__main__":
     unittest.main()

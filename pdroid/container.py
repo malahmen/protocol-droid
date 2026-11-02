@@ -112,10 +112,15 @@ def build(_args, rt="") -> int:
 
 def convert(args, rt="") -> int:
     out_dir, fmt, page_range, force_ocr, paths = c.DEFAULT_OUTPUT_DIR, "markdown", "", False, []
+    only_paths = False
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--output-dir":
+        if only_paths:
+            paths.append(a); i += 1
+        elif a == "--":
+            only_paths = True; i += 1   # end of options: the rest are paths (Kamino 234)
+        elif a == "--output-dir":
             out_dir = args[i + 1]; i += 2
         elif a == "--output-format":
             fmt = args[i + 1]; i += 2
@@ -159,7 +164,9 @@ def convert(args, rt="") -> int:
     if force_ocr:
         cmd.append("--force-ocr")
     info(f"container: {len(files)} file(s) → marker ({rt}, {IMAGE})")
-    rc = c.run(cmd + files)
+    # "--" before the files: cli.py's argparse would read one named -x.pdf
+    # as an option (Kamino 234). They are absolute here; this is the guard.
+    rc = c.run(cmd + ["--"] + files)
     if rc not in (EX_OK, EX_FAILED, EX_NO_INPUT, EX_NOTHING):
         # 125-127 are the runtime's own (it could not start the container, or
         # the command in it): outside the 0-3 contract a caller reads.
@@ -173,11 +180,15 @@ def convert(args, rt="") -> int:
 
 
 def bench(args, rt="") -> int:
-    runs, report, paths, extra = "1", "", [], []
+    runs, report, paths, extra, only_paths = "1", "", [], [], False
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--runs":
+        if only_paths:
+            paths.append(a); i += 1
+        elif a == "--":
+            only_paths = True; i += 1   # end of options: the rest are paths (Kamino 234)
+        elif a == "--runs":
             runs = args[i + 1]; i += 2
         elif a == "--report":
             report = args[i + 1]; i += 2
@@ -206,7 +217,7 @@ def bench(args, rt="") -> int:
     # folder of the caller's has to be writable from inside.
     with open(report, "w", encoding="utf-8") as fh:
         rc = c.run([rt, *base_args(rt), *mount_args("", files), IMAGE,
-                    "python", "cli.py", "bench", "--runs", runs, *extra, *files], stdout=fh)
+                    "python", "cli.py", "bench", "--runs", runs, *extra, "--", *files], stdout=fh)
     if os.path.getsize(report) > 0:
         success(f"Report: {report}")
     else:

@@ -114,6 +114,26 @@ STUB_RUN_RC=125 run container convert --runtime docker --output-dir "$T/out-y" "
 check "the runtime's 125 becomes 1" test "$RC" -eq 1
 check "  saying the container did not run" has "did not run the conversion" "$T/out"
 
+echo "## -- ends the options: files named -x.pdf (Kamino 234)"
+# Relative names from the working folder; after `--` they are paths, and
+# cli.py in the image gets them after a `--` of its own, so its argparse
+# cannot read one as an option.
+: > "$T/work/-x.pdf"; : > "$T/work/--weird.pdf"
+run container convert --runtime docker --output-dir "$T/out-dd" -- -x.pdf --weird.pdf
+args
+check "convert: exits 0" test "$RC" -eq 0
+check "  cli.py gets -- before the files" test "$(arg_after --)" = "$T/work/-x.pdf"
+check "  and the second file after it" has "$T/work/--weird.pdf" "$T/args"
+run container bench --runtime docker --no-cold -- -x.pdf
+args
+check "bench: exits 0" test "$RC" -eq 0
+check "  cli.py gets -- before the files" test "$(arg_after --)" = "$T/work/-x.pdf"
+run container convert --runtime docker --output-dir "$T/out-dd" -x.pdf
+check "without --: still an unknown flag" test "$RC" -eq 1
+check "  with the same message" has "container convert: unknown flag -x.pdf" "$T/out"
+run container bench --runtime docker -x.pdf
+check "bench without --: still an unknown flag" has "container bench: unknown flag -x.pdf" "$T/out"
+
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
 echo "all checks passed"

@@ -3,6 +3,9 @@
 # source whose name contains "boom" fails.
 set -uo pipefail
 src="$1"; shift; out=""
+# Like the real (click) CLI: a first argument starting with "-" is an option
+# it does not know, not a document - so ./-x.pdf has to reach it, not -x.pdf.
+case "$src" in -*) echo "stub: no such option: $src" >&2; exit 2 ;; esac
 while [[ $# -gt 0 ]]; do
     case "$1" in --output_dir) out="$2"; shift 2 ;; *) shift ;; esac
 done

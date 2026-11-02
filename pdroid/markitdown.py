@@ -88,10 +88,14 @@ def setup(args) -> int:
 
 
 def scan(args) -> int:
-    depth, directory = c.DEFAULT_DEPTH, ""
+    depth, directory, only_paths = c.DEFAULT_DEPTH, "", False
     it = iter(args)
     for a in it:
-        if a == "--depth":
+        if only_paths:
+            directory = a
+        elif a == "--":
+            only_paths = True     # end of options: what follows is the folder
+        elif a == "--depth":
             depth = int(next(it, c.DEFAULT_DEPTH))
         elif a.startswith("-"):
             error_exit(f"markitdown scan: unknown flag: {a}")
@@ -116,21 +120,28 @@ def output_names(files, input_root=""):
 def convert(args, open_output=True) -> int:
     """One .md per input (markitdown has no batch mode).
 
-    --output-dir DIR, --no-clobber (keep doc.md, write doc_2.md), and anything
-    after `--` forwarded verbatim (e.g. --use-plugins, -d, -e URL).
+    --output-dir DIR, --no-clobber (keep doc.md, write doc_2.md). A `--`
+    before any path ends the options: what follows is a path, even "-x.md"
+    (Kamino 234). A `--` after a path starts markitdown's own flags,
+    forwarded verbatim (e.g. --use-plugins, -d, -e URL).
     """
     out_dir, paths, extra, clobber, input_root = c.DEFAULT_OUTPUT_DIR, [], [], True, ""
+    only_paths = False
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--output-dir":
+        if a == "--" and not paths and not only_paths:
+            only_paths = True; i += 1
+        elif a == "--":
+            extra += args[i + 1:]; break
+        elif only_paths:
+            paths.append(a); i += 1
+        elif a == "--output-dir":
             out_dir = args[i + 1]; i += 2
         elif a == "--output-format":
             i += 2        # accepted and ignored: markitdown only emits Markdown
         elif a == "--no-clobber":
             clobber = False; i += 1
-        elif a == "--":
-            extra += args[i + 1:]; break
         elif a.startswith("-"):
             error_exit(f"markitdown convert: unknown flag: {a} (forward markitdown flags after --)")
         else:
@@ -173,7 +184,8 @@ def convert(args, open_output=True) -> int:
         written.add(os.path.normcase(os.path.abspath(out)).casefold())
         info(f"Converting {f} ...")
         started = c.now_epoch()
-        if c.run([binary, f, "-o", out, *extra]) == 0:
+        cmd = [binary, c.operand(f), "-o", out, *extra]
+        if c.run(cmd) == 0:
             success(f"→ {out}")
             ok += 1
             # Named after the output: every input in this run writes into the
@@ -182,7 +194,7 @@ def convert(args, open_output=True) -> int:
             name = os.path.basename(out)
             if not c.provenance_write(folder, f, "markitdown", f"markitdown={ver}", started, c.now_epoch(),
                                       "markdown", input_root, f"{name}.provenance.json", [name],
-                                      [binary, f, "-o", out, *extra]):
+                                      cmd):
                 noprov += 1
         else:
             warn(f"Failed: {f}")
